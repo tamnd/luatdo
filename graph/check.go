@@ -6,6 +6,8 @@ import (
 	"sort"
 
 	"github.com/neo4j/neo4j-go-driver/v5/neo4j"
+
+	"github.com/tamnd/luatdo/law"
 )
 
 // counters are the projection's countable parts, paired with the query that
@@ -17,14 +19,24 @@ var counters = []struct {
 	want  func(Summary) int
 }{
 	{"documents", "MATCH (d:Document) RETURN count(d) AS n", func(s Summary) int { return s.Documents }},
-	{"provisions", "MATCH (p:Provision) RETURN count(p) AS n", func(s Summary) int { return s.Provisions }},
+	{"components", "MATCH (c:Component) RETURN count(c) AS n", func(s Summary) int { return s.Components }},
+	// The alias label is counted separately and expected to match the component
+	// count exactly. That is the whole promise of shipping it: a query written
+	// against the earlier projection sees the same nodes. When the alias is
+	// dropped this counter goes with it, and until then a mismatch means a
+	// partial merge left some nodes with one label and some with both.
+	{"provisions", "MATCH (p:" + law.ProvisionAlias + ") RETURN count(p) AS n", func(s Summary) int { return s.Components }},
+	{"text_versions", "MATCH (v:TextVersion) RETURN count(v) AS n", func(s Summary) int { return s.TextVersions }},
 	{"terms", "MATCH (t:Term) RETURN count(t) AS n", func(s Summary) int { return s.Terms }},
 	{"concepts", "MATCH (c:LegalConcept) RETURN count(c) AS n", func(s Summary) int { return s.Concepts }},
+	{"subjects", "MATCH (s:Subject) RETURN count(s) AS n", func(s Summary) int { return s.Subjects }},
 	{"norms", "MATCH (n:Norm) RETURN count(n) AS n", func(s Summary) int { return s.Norms }},
 	{"contains", "MATCH ()-[r:CONTAINS]->() RETURN count(r) AS n", func(s Summary) int { return s.Contains }},
+	{"has_version", "MATCH ()-[r:HAS_VERSION]->() RETURN count(r) AS n", func(s Summary) int { return s.TextVersions }},
 	{"cites", "MATCH ()-[r:CITES|AMENDS]->() RETURN count(r) AS n", func(s Summary) int { return s.Cites }},
 	{"defines", "MATCH ()-[r:DEFINES]->() RETURN count(r) AS n", func(s Summary) int { return s.Defines }},
 	{"mentions", "MATCH ()-[r:MENTIONS]->() RETURN count(r) AS n", func(s Summary) int { return s.Mentions }},
+	{"about_subject", "MATCH ()-[r:ABOUT_SUBJECT]->() RETURN count(r) AS n", func(s Summary) int { return s.AboutSubject }},
 }
 
 // Live counts what the database currently holds.

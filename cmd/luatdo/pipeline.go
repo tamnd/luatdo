@@ -18,6 +18,7 @@ import (
 	"github.com/tamnd/luatdo/ontology"
 	"github.com/tamnd/luatdo/parse"
 	"github.com/tamnd/luatdo/store"
+	"github.com/tamnd/luatdo/subject"
 )
 
 func init() {
@@ -365,6 +366,13 @@ func cmdExport(args []string) error {
 	in.Definitions, _ = loadDefinitions(s)
 	in.Registry, _ = ontology.Load(s.Ontology())
 	in.Mentions, _ = loadResolutions(s)
+	// The subject layer only reaches the projection when both halves are there.
+	// A store where luatdo subjects has never run exports the document graph
+	// alone, the same way it does without the ontology.
+	if records, err := subject.ReadRecords(filepath.Join(s.Subject(), subject.AssignmentsFile)); err == nil {
+		in.Subjects = records
+		in.Vocabulary, _ = subject.Load()
+	}
 	_ = store.ReadJSON(filepath.Join(s.Trusted(), "statements.json"), &in.Statements)
 	summary := graph.Summarize(in)
 	if *check {

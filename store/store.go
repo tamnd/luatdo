@@ -43,6 +43,7 @@ func (s *Store) Raw() string      { return filepath.Join(s.Root, "raw") }
 func (s *Store) Docs() string     { return filepath.Join(s.Root, "docs") }
 func (s *Store) Cite() string     { return filepath.Join(s.Root, "cite") }
 func (s *Store) Anchor() string   { return filepath.Join(s.Root, "anchor") }
+func (s *Store) Subject() string  { return filepath.Join(s.Root, "subject") }
 func (s *Store) Terms() string    { return filepath.Join(s.Root, "terms") }
 func (s *Store) Ontology() string { return filepath.Join(s.Root, "ontology") }
 func (s *Store) Extracts() string { return filepath.Join(s.Root, "extract") }
