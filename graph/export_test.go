@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/tamnd/luatdo/cite"
+	"github.com/tamnd/luatdo/concept"
 	"github.com/tamnd/luatdo/law"
 	"github.com/tamnd/luatdo/norm"
 	"github.com/tamnd/luatdo/subject"
@@ -294,5 +295,190 @@ func TestSummarize(t *testing.T) {
 	want := Summary{Documents: 2, Components: 2, TextVersions: 1, Contains: 2, Cites: 1, Unresolved: 1}
 	if s != want {
 		t.Errorf("Summarize = %+v, want %+v", s, want)
+	}
+}
+
+// conceptLayer is one label used by two instruments for two different things,
+// one of which a reviewer merged into a corpus wide concept and the other of
+// which the same reviewer recorded as a difference. That pair is the whole
+// point of the layer, so the projection is tested on it rather than on a
+// single tidy term.
+func conceptLayer() *concept.Layer {
+	const labour = "vn:law:2019:45-2019-qh14"
+	const decree = "vn:law:2012:10-2012-qh13"
+	return &concept.Layer{
+		TermUses: []concept.TermUse{
+			{
+				ID: "vn:term:" + labour + ":nguoi-lao-dong", LabelVI: "Người lao động",
+				ScopeID: labour, DocID: labour, Kind: concept.KindActor,
+				DefinitionVI: "người làm việc cho người sử dụng lao động",
+				Genus:        "người làm việc",
+				Differentiae: []concept.Differentia{{Text: "theo thỏa thuận; được trả lương"}},
+				Aliases:      []string{"NLĐ"},
+				Origin:       concept.OriginDefined, DefinedBy: labour + ":article-1",
+				Quote: "Người lao động", CharStart: 0, CharEnd: 14, Confidence: 0.9,
+				ReferencedTerms: []string{"Người sử dụng lao động", "Hợp đồng lao động"},
+			},
+			{
+				ID: "vn:term:" + labour + ":nguoi-su-dung-lao-dong", LabelVI: "Người sử dụng lao động",
+				ScopeID: labour, DocID: labour, Kind: concept.KindActor,
+				Origin: concept.OriginDefined, DefinedBy: labour + ":article-1",
+				Quote: "Người sử dụng lao động", Confidence: 0.9,
+			},
+			{
+				ID: "vn:term:" + decree + ":nguoi-lao-dong", LabelVI: "Người lao động",
+				ScopeID: decree, DocID: decree, Kind: concept.KindActor,
+				Origin: concept.OriginDefined, DefinedBy: decree + ":article-3",
+				Quote: "Người lao động", Confidence: 0.8,
+			},
+		},
+		Concepts: []concept.Concept{
+			{ID: "vn:concept:nguoi-lao-dong", LabelVI: "Người lao động", Kind: concept.KindActor},
+		},
+		Memberships: []concept.Membership{{
+			TermUseID: "vn:term:" + labour + ":nguoi-lao-dong", ConceptID: "vn:concept:nguoi-lao-dong",
+			Relation: concept.RelationSame, DecidedBy: "tamnd", DecidedAt: "2026-08-01T00:00:00Z",
+			Rationale: "định nghĩa gốc của Bộ luật Lao động",
+		}},
+		Differences: []concept.Difference{{
+			FromID: "vn:term:" + decree + ":nguoi-lao-dong", ToID: "vn:term:" + labour + ":nguoi-lao-dong",
+			DecidedBy: "tamnd", DecidedAt: "2026-08-01T00:00:00Z",
+			Rationale: "phạm vi hẹp hơn",
+			Basis:     []string{"độ tuổi", "hình thức hợp đồng"},
+		}},
+	}
+}
+
+func TestTheProjectionKeepsATermUseApartFromTheConceptItWasMergedInto(t *testing.T) {
+	docs, links := fixture()
+	dir := t.TempDir()
+	in := Input{Docs: docs, Links: links, Layer: conceptLayer()}
+	if err := Export(dir, in); err != nil {
+		t.Fatalf("Export: %v", err)
+	}
+
+	uses := readCSV(t, filepath.Join(dir, "term_uses.csv"))
+	if len(uses) != 4 {
+		t.Fatalf("term_uses.csv rows = %d, want header plus 3", len(uses))
+	}
+	if label := uses[1][len(uses[1])-1]; label != "TermUse" {
+		t.Errorf("term use label = %q", label)
+	}
+	// Two instruments, one label, two nodes. A projection that keyed on the
+	// label would have written one, and the difference below would have nothing
+	// to hang off.
+	if uses[1][0] == uses[3][0] {
+		t.Errorf("two instruments got one identifier: %s", uses[1][0])
+	}
+
+	concepts := readCSV(t, filepath.Join(dir, "merged_concepts.csv"))
+	if len(concepts) != 2 {
+		t.Fatalf("merged_concepts.csv rows = %d, want header plus 1", len(concepts))
+	}
+	if label := concepts[1][len(concepts[1])-1]; label != "Concept" {
+		t.Errorf("concept label = %q", label)
+	}
+
+	// The decision rides on the edge, because the edge is the merge.
+	memberships := readCSV(t, filepath.Join(dir, "instance_of.csv"))
+	if len(memberships) != 2 {
+		t.Fatalf("instance_of.csv rows = %d", len(memberships))
+	}
+	row := memberships[1]
+	if row[3] != "tamnd" || row[5] == "" {
+		t.Errorf("instance of = %v, want the decider and the reason on the edge", row)
+	}
+
+	differences := readCSV(t, filepath.Join(dir, "differs_from.csv"))
+	if len(differences) != 2 {
+		t.Fatalf("differs_from.csv rows = %d", len(differences))
+	}
+	if basis := differences[1][5]; basis != "độ tuổi|hình thức hợp đồng" {
+		t.Errorf("basis = %q, want the two features packed on the pipe", basis)
+	}
+}
+
+// A differentia written by a Vietnamese drafter is full of semicolons, and the
+// importer's default array separator is the semicolon, so one feature would
+// arrive as two. The export picks a separator that legal prose does not use and
+// tells neo4j-admin about it in the same breath.
+func TestAnArrayColumnSurvivesASemicolonInLegalProse(t *testing.T) {
+	docs, links := fixture()
+	dir := t.TempDir()
+	if err := Export(dir, Input{Docs: docs, Links: links, Layer: conceptLayer()}); err != nil {
+		t.Fatalf("Export: %v", err)
+	}
+	uses := readCSV(t, filepath.Join(dir, "term_uses.csv"))
+	header, row := uses[0], uses[1]
+	at := slices.Index(header, "differentiae:string[]")
+	if at < 0 {
+		t.Fatalf("no differentiae column: %v", header)
+	}
+	if row[at] != "theo thỏa thuận; được trả lương" {
+		t.Errorf("differentiae = %q, want the one feature whole", row[at])
+	}
+	script, err := os.ReadFile(filepath.Join(dir, "import.sh"))
+	if err != nil {
+		t.Fatalf("read import.sh: %v", err)
+	}
+	if !strings.Contains(string(script), `--array-delimiter="|"`) {
+		t.Error("the import script does not pass the separator the export used")
+	}
+	for _, name := range []string{"term_uses.csv", "merged_concepts.csv", "instance_of.csv", "differs_from.csv", "term_use_edges.csv"} {
+		if !strings.Contains(string(script), name) {
+			t.Errorf("import.sh does not load %s", name)
+		}
+	}
+}
+
+// neo4j-admin refuses an entire import over one relationship row pointing at an
+// identifier no node file declares, so every edge out of a term use is checked
+// against the nodes this export actually writes.
+func TestNoEdgeLeavesATermUseForANodeTheExportNeverWrote(t *testing.T) {
+	docs, links := fixture()
+	layer := conceptLayer()
+	// A term recovered from a clause the corpus no longer carries, and a
+	// reference to a term nobody ever defined. Both are ordinary and neither may
+	// reach the import.
+	layer.TermUses = append(layer.TermUses, concept.TermUse{
+		ID: "vn:term:vn:law:1999:gone:tu-ngu-cu", LabelVI: "Từ ngữ cũ",
+		ScopeID: "vn:law:1999:gone", DocID: "vn:law:1999:gone", Kind: concept.KindOther,
+		Origin: concept.OriginRecovered, DefinedBy: "vn:law:1999:gone:article-2",
+		Quote: "Từ ngữ cũ", Confidence: 0.5,
+	})
+
+	dir := t.TempDir()
+	if err := Export(dir, Input{Docs: docs, Links: links, Layer: layer}); err != nil {
+		t.Fatalf("Export: %v", err)
+	}
+	known := map[string]bool{}
+	for _, name := range []string{"documents.csv", "components.csv", "term_uses.csv", "merged_concepts.csv"} {
+		rows := readCSV(t, filepath.Join(dir, name))
+		for _, r := range rows[1:] {
+			known[r[0]] = true
+		}
+	}
+	for _, name := range []string{"instance_of.csv", "differs_from.csv", "term_use_edges.csv"} {
+		for _, r := range readCSV(t, filepath.Join(dir, name))[1:] {
+			if !known[r[0]] || !known[r[1]] {
+				t.Errorf("%s points %s at %s and one of them is not a node", name, r[0], r[1])
+			}
+		}
+	}
+
+	edges := readCSV(t, filepath.Join(dir, "term_use_edges.csv"))
+	var kinds []string
+	for _, r := range edges[1:] {
+		kinds = append(kinds, r[2])
+	}
+	// One DEFINES_TERM and one IN_SCOPE for each of the three term uses that
+	// live in documents this export holds, plus the single referenced term that
+	// resolves inside its own instrument. The second referenced term, hop dong
+	// lao dong, is never defined and so is never linked.
+	if got := strings.Count(strings.Join(kinds, " "), "REFERS_TO"); got != 1 {
+		t.Errorf("REFERS_TO edges = %d, want only the reference that resolves", got)
+	}
+	if s := Summarize(Input{Docs: docs, Links: links, Layer: layer}); s.TermUses != 4 || s.MergedConcepts != 1 || s.TermUseEdges != len(edges)-1 {
+		t.Errorf("summary = %+v, want the counts the files carry", s)
 	}
 }

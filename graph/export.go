@@ -12,8 +12,10 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/tamnd/luatdo/cite"
+	"github.com/tamnd/luatdo/concept"
 	"github.com/tamnd/luatdo/law"
 	"github.com/tamnd/luatdo/link"
 	"github.com/tamnd/luatdo/norm"
@@ -39,9 +41,14 @@ CREATE FULLTEXT INDEX component_heading IF NOT EXISTS FOR (c:Component) ON EACH 
 CREATE FULLTEXT INDEX document_title IF NOT EXISTS FOR (d:Document) ON EACH [d.title, d.title_en];
 CREATE FULLTEXT INDEX term_text IF NOT EXISTS FOR (t:Term) ON EACH [t.text];
 CREATE CONSTRAINT norm_id IF NOT EXISTS FOR (n:Norm) REQUIRE n.id IS UNIQUE;
+CREATE CONSTRAINT term_use_id IF NOT EXISTS FOR (t:TermUse) REQUIRE t.id IS UNIQUE;
+CREATE CONSTRAINT merged_concept_id IF NOT EXISTS FOR (c:Concept) REQUIRE c.id IS UNIQUE;
 CREATE INDEX norm_type IF NOT EXISTS FOR (n:Norm) ON (n.norm_type);
+CREATE INDEX term_use_kind IF NOT EXISTS FOR (t:TermUse) ON (t.kind);
+CREATE INDEX term_use_role IF NOT EXISTS FOR (t:TermUse) ON (t.is_role);
 CREATE INDEX doc_effective IF NOT EXISTS FOR (d:Document) ON (d.effective_from);
 CREATE INDEX version_from IF NOT EXISTS FOR (v:TextVersion) ON (v.from_date);
+CREATE FULLTEXT INDEX term_use_text IF NOT EXISTS FOR (t:TermUse) ON EACH [t.label_vi, t.definition_vi];
 `
 
 // componentLabels is what a component node carries. law.ProvisionAlias rides
@@ -64,6 +71,12 @@ type Input struct {
 	// without the vocabulary would hang edges off subjects that do not exist.
 	Vocabulary *subject.Vocabulary
 	Subjects   []subject.Record
+	// Layer is the concept layer: terms as each instrument uses them, the
+	// corpus wide concepts a person merged them into, and the differences a
+	// person recorded instead of merging. It is separate from Registry, which
+	// holds the designed vocabulary. Registry says what kinds of thing exist,
+	// the layer says which ones the corpus actually names.
+	Layer *concept.Layer
 }
 
 // Export writes the CSV projection into dir.
@@ -343,10 +356,180 @@ func Export(dir string, in Input) error {
 		}); err != nil {
 		return err
 	}
+	if err := writeCSV(filepath.Join(dir, "term_uses.csv"),
+		[]string{"id:ID", "label_vi", "scope_id", "doc_id", "definition_vi", "genus", "kind",
+			"aliases:string[]", "differentiae:string[]", "enumerated_subtypes:string[]", "is_role:boolean", "by_reference",
+			"origin", "defined_by", "quote", "char_start:int", "char_end:int", "confidence:float",
+			"model", ":LABEL"},
+		func(w *csv.Writer) error {
+			return eachTermUse(in.Layer, func(t *concept.TermUse) error {
+				differentiae := make([]string, 0, len(t.Differentiae))
+				for _, d := range t.Differentiae {
+					differentiae = append(differentiae, d.Text)
+				}
+				byReference := ""
+				if t.DefinesByReference != nil {
+					byReference = t.DefinesByReference.Instrument
+				}
+				return w.Write([]string{t.ID, t.LabelVI, t.ScopeID, t.DocID, t.DefinitionVI, t.Genus, t.Kind,
+					join(t.Aliases), join(differentiae), join(t.EnumeratedSubtypes),
+					strconv.FormatBool(t.IsRole), byReference,
+					t.Origin, t.DefinedBy, t.Quote, strconv.Itoa(t.CharStart), strconv.Itoa(t.CharEnd),
+					strconv.FormatFloat(t.Confidence, 'f', 2, 64), t.Model, "TermUse"})
+			})
+		}); err != nil {
+		return err
+	}
+	if err := writeCSV(filepath.Join(dir, "merged_concepts.csv"),
+		[]string{"id:ID", "label_vi", "label_en", "kind", "disambiguator", "registry_class", ":LABEL"},
+		func(w *csv.Writer) error {
+			if in.Layer == nil {
+				return nil
+			}
+			for _, c := range in.Layer.Concepts {
+				if err := w.Write([]string{c.ID, c.LabelVI, c.LabelEN, c.Kind, c.Disambiguator, c.RegistryClass, "Concept"}); err != nil {
+					return err
+				}
+			}
+			return nil
+		}); err != nil {
+		return err
+	}
+	if err := writeCSV(filepath.Join(dir, "instance_of.csv"),
+		[]string{":START_ID", ":END_ID", "relation", "decided_by", "decided_at", "rationale", ":TYPE"},
+		func(w *csv.Writer) error {
+			return eachMembership(in.Layer, func(m *concept.Membership) error {
+				return w.Write([]string{m.TermUseID, m.ConceptID, m.Relation, m.DecidedBy, m.DecidedAt, m.Rationale, "INSTANCE_OF"})
+			})
+		}); err != nil {
+		return err
+	}
+	if err := writeCSV(filepath.Join(dir, "differs_from.csv"),
+		[]string{":START_ID", ":END_ID", "decided_by", "decided_at", "rationale", "basis:string[]", ":TYPE"},
+		func(w *csv.Writer) error {
+			return eachDifference(in.Layer, func(d *concept.Difference) error {
+				return w.Write([]string{d.FromID, d.ToID, d.DecidedBy, d.DecidedAt, d.Rationale, join(d.Basis), "DIFFERS_FROM"})
+			})
+		}); err != nil {
+		return err
+	}
+	if err := writeCSV(filepath.Join(dir, "term_use_edges.csv"),
+		[]string{":START_ID", ":END_ID", ":TYPE"},
+		func(w *csv.Writer) error {
+			return eachTermUseEdge(in, func(from, to, relType string) error {
+				return w.Write([]string{from, to, relType})
+			})
+		}); err != nil {
+		return err
+	}
 	if err := os.WriteFile(filepath.Join(dir, "schema.cypher"), []byte(Schema), 0o644); err != nil {
 		return err
 	}
 	return writeImportScripts(dir)
+}
+
+// arrayDelimiter separates the elements of an array column. The importer's
+// default is a semicolon, which Vietnamese legal drafting uses inside almost
+// every enumerated definition, so one differentia would arrive as four. The
+// pipe is passed to neo4j-admin explicitly by the import scripts.
+const arrayDelimiter = "|"
+
+// join packs a list into one CSV cell.
+func join(values []string) string { return strings.Join(values, arrayDelimiter) }
+
+// eachTermUse, eachMembership and eachDifference walk the concept layer,
+// skipping nothing: the layer was already checked by concept.Layer.Check before
+// it was written, and a projection is not the place to discover an invariant.
+func eachTermUse(l *concept.Layer, visit func(*concept.TermUse) error) error {
+	if l == nil {
+		return nil
+	}
+	for i := range l.TermUses {
+		if err := visit(&l.TermUses[i]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func eachMembership(l *concept.Layer, visit func(*concept.Membership) error) error {
+	if l == nil {
+		return nil
+	}
+	for i := range l.Memberships {
+		if err := visit(&l.Memberships[i]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func eachDifference(l *concept.Layer, visit func(*concept.Difference) error) error {
+	if l == nil {
+		return nil
+	}
+	for i := range l.Differences {
+		if err := visit(&l.Differences[i]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// eachTermUseEdge visits the edges that tie a term use to the rest of the
+// graph: the provision that defines it, the instrument it is scoped to, and the
+// other terms its definition leans on.
+//
+// Every one of those is checked against the nodes this export actually writes.
+// A term use recovered from a clause the corpus no longer carries, or a
+// referenced term that was never itself defined, would otherwise put a dangling
+// identifier in a relationship file, and neo4j-admin refuses the entire import
+// over a single one of those rather than skipping the row.
+func eachTermUseEdge(in Input, visit func(from, to, relType string) error) error {
+	if in.Layer == nil {
+		return nil
+	}
+	components := map[string]bool{}
+	for _, d := range in.Docs {
+		components[d.ID] = true
+	}
+	if err := eachComponent(in.Docs, func(c *law.Component) error {
+		components[c.ID] = true
+		return nil
+	}); err != nil {
+		return err
+	}
+	terms := map[string]bool{}
+	for i := range in.Layer.TermUses {
+		terms[in.Layer.TermUses[i].ID] = true
+	}
+	for i := range in.Layer.TermUses {
+		t := &in.Layer.TermUses[i]
+		if components[t.DefinedBy] {
+			if err := visit(t.DefinedBy, t.ID, "DEFINES_TERM"); err != nil {
+				return err
+			}
+		}
+		if components[t.ScopeID] {
+			if err := visit(t.ID, t.ScopeID, "IN_SCOPE"); err != nil {
+				return err
+			}
+		}
+		// A referenced term is a label, and a label is not an identity, so it
+		// resolves only inside the instrument that wrote it. Reaching across
+		// instruments here would be the string match merge the whole layer
+		// exists to refuse.
+		for _, label := range t.ReferencedTerms {
+			id := concept.TermUseID(t.ScopeID, label)
+			if id == t.ID || !terms[id] {
+				continue
+			}
+			if err := visit(t.ID, id, "REFERS_TO"); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // eachComponent and eachVersion walk the split form of the corpus. Both call
@@ -450,14 +633,17 @@ func writeCSV(path string, header []string, body func(*csv.Writer) error) error 
 // writeImportScripts writes the neo4j-admin invocation for both shells, so
 // the export directory works on the Linux servers and the Windows machine.
 func writeImportScripts(dir string) error {
-	args := `database import full luatdo --overwrite-destination ` +
+	args := `database import full luatdo --overwrite-destination --array-delimiter="` + arrayDelimiter + `" ` +
 		`--nodes=documents.csv --nodes=components.csv --nodes=text_versions.csv ` +
 		`--nodes=terms.csv --nodes=concepts.csv --nodes=subjects.csv ` +
 		`--nodes=norms.csv --nodes=norm_details.csv ` +
+		`--nodes=term_uses.csv --nodes=merged_concepts.csv ` +
 		`--relationships=contains.csv --relationships=has_version.csv --relationships=cites.csv ` +
 		`--relationships=defines.csv --relationships=mentions.csv ` +
 		`--relationships=subject_parents.csv --relationships=about_subject.csv ` +
-		`--relationships=has_norm.csv --relationships=norm_edges.csv`
+		`--relationships=has_norm.csv --relationships=norm_edges.csv ` +
+		`--relationships=instance_of.csv --relationships=differs_from.csv ` +
+		`--relationships=term_use_edges.csv`
 	sh := "#!/bin/sh\n# Run from this directory with the database stopped.\nneo4j-admin " + args + "\n"
 	cmd := "@echo off\r\nrem Run from this directory with the database stopped.\r\nneo4j-admin " + args + "\r\n"
 	if err := os.WriteFile(filepath.Join(dir, "import.sh"), []byte(sh), 0o755); err != nil {
@@ -481,6 +667,15 @@ type Summary struct {
 	Subjects     int `json:"subjects"`
 	AboutSubject int `json:"about_subject"`
 	Norms        int `json:"norms"`
+	// TermUses and MergedConcepts are counted apart on purpose. The gap between
+	// them is the work: every term use is discovered, every concept was created
+	// by somebody deciding two of them are the same thing, and a report that
+	// added them together would hide how much of the corpus nobody has read yet.
+	TermUses       int `json:"term_uses"`
+	MergedConcepts int `json:"merged_concepts"`
+	InstanceOf     int `json:"instance_of"`
+	DiffersFrom    int `json:"differs_from"`
+	TermUseEdges   int `json:"term_use_edges"`
 }
 
 // Summarize counts the projection without writing it.
@@ -524,6 +719,16 @@ func Summarize(in Input) Summary {
 		}
 	}
 	s.Norms = len(in.Statements)
+	if in.Layer != nil {
+		s.TermUses = len(in.Layer.TermUses)
+		s.MergedConcepts = len(in.Layer.Concepts)
+		s.InstanceOf = len(in.Layer.Memberships)
+		s.DiffersFrom = len(in.Layer.Differences)
+	}
+	_ = eachTermUseEdge(in, func(string, string, string) error {
+		s.TermUseEdges++
+		return nil
+	})
 	return s
 }
 
@@ -544,6 +749,10 @@ func (s Summary) String() string {
 	}
 	if s.Norms > 0 {
 		out += fmt.Sprintf(", norms %d", s.Norms)
+	}
+	if s.TermUses > 0 {
+		out += fmt.Sprintf(", term uses %d, merged concepts %d, instance of %d, differs from %d",
+			s.TermUses, s.MergedConcepts, s.InstanceOf, s.DiffersFrom)
 	}
 	return out
 }

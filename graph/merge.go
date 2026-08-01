@@ -7,9 +7,22 @@ import (
 
 	"github.com/neo4j/neo4j-go-driver/v5/neo4j"
 
+	"github.com/tamnd/luatdo/concept"
 	"github.com/tamnd/luatdo/law"
 	"github.com/tamnd/luatdo/subject"
 )
+
+// asAny hands a string list to the driver as a list rather than as a Go slice
+// the parameter encoder would have to guess at. A nil list is sent as an empty
+// one, so a term with no aliases sets the property to [] instead of leaving
+// whatever an earlier merge put there.
+func asAny(values []string) []any {
+	out := make([]any, 0, len(values))
+	for _, v := range values {
+		out = append(out, v)
+	}
+	return out
+}
 
 // Target is a Bolt connection. Values default from the LUATDO_NEO4J
 // environment variables, so the servers and the Windows machine configure
@@ -202,6 +215,67 @@ func Merge(ctx context.Context, target Target, in Input) error {
 		return err
 	}
 
+	var termUseRows, mergedConceptRows, instanceOfRows, differsFromRows []map[string]any
+	termUseEdgeRows := map[string][]map[string]any{}
+	if err := eachTermUse(in.Layer, func(t *concept.TermUse) error {
+		differentiae := make([]string, 0, len(t.Differentiae))
+		for _, d := range t.Differentiae {
+			differentiae = append(differentiae, d.Text)
+		}
+		byReference := ""
+		if t.DefinesByReference != nil {
+			byReference = t.DefinesByReference.Instrument
+		}
+		// Bolt carries a list as a list, so nothing is joined here. The CSV path
+		// packs the same values into one cell only because that file format has
+		// no other way to say it.
+		termUseRows = append(termUseRows, map[string]any{
+			"id": t.ID, "label_vi": t.LabelVI, "scope_id": t.ScopeID, "doc_id": t.DocID,
+			"definition_vi": t.DefinitionVI, "genus": t.Genus, "kind": t.Kind,
+			"aliases": asAny(t.Aliases), "differentiae": asAny(differentiae),
+			"enumerated_subtypes": asAny(t.EnumeratedSubtypes),
+			"is_role":             t.IsRole, "by_reference": byReference,
+			"origin": t.Origin, "defined_by": t.DefinedBy, "quote": t.Quote,
+			"char_start": t.CharStart, "char_end": t.CharEnd,
+			"confidence": t.Confidence, "model": t.Model,
+		})
+		return nil
+	}); err != nil {
+		return err
+	}
+	if in.Layer != nil {
+		for _, c := range in.Layer.Concepts {
+			mergedConceptRows = append(mergedConceptRows, map[string]any{
+				"id": c.ID, "label_vi": c.LabelVI, "label_en": c.LabelEN, "kind": c.Kind,
+				"disambiguator": c.Disambiguator, "registry_class": c.RegistryClass,
+			})
+		}
+	}
+	if err := eachMembership(in.Layer, func(m *concept.Membership) error {
+		instanceOfRows = append(instanceOfRows, map[string]any{
+			"from": m.TermUseID, "to": m.ConceptID, "relation": m.Relation,
+			"decided_by": m.DecidedBy, "decided_at": m.DecidedAt, "rationale": m.Rationale,
+		})
+		return nil
+	}); err != nil {
+		return err
+	}
+	if err := eachDifference(in.Layer, func(d *concept.Difference) error {
+		differsFromRows = append(differsFromRows, map[string]any{
+			"from": d.FromID, "to": d.ToID, "decided_by": d.DecidedBy,
+			"decided_at": d.DecidedAt, "rationale": d.Rationale, "basis": asAny(d.Basis),
+		})
+		return nil
+	}); err != nil {
+		return err
+	}
+	if err := eachTermUseEdge(in, func(from, to, relType string) error {
+		termUseEdgeRows[relType] = append(termUseEdgeRows[relType], map[string]any{"from": from, "to": to})
+		return nil
+	}); err != nil {
+		return err
+	}
+
 	for _, statement := range []string{
 		"CREATE CONSTRAINT doc_id IF NOT EXISTS FOR (d:Document) REQUIRE d.id IS UNIQUE",
 		"CREATE CONSTRAINT component_id IF NOT EXISTS FOR (c:Component) REQUIRE c.id IS UNIQUE",
@@ -210,6 +284,8 @@ func Merge(ctx context.Context, target Target, in Input) error {
 		"CREATE CONSTRAINT concept_id IF NOT EXISTS FOR (c:LegalConcept) REQUIRE c.id IS UNIQUE",
 		"CREATE CONSTRAINT subject_id IF NOT EXISTS FOR (s:Subject) REQUIRE s.id IS UNIQUE",
 		"CREATE CONSTRAINT norm_id IF NOT EXISTS FOR (n:Norm) REQUIRE n.id IS UNIQUE",
+		"CREATE CONSTRAINT term_use_id IF NOT EXISTS FOR (t:TermUse) REQUIRE t.id IS UNIQUE",
+		"CREATE CONSTRAINT merged_concept_id IF NOT EXISTS FOR (c:Concept) REQUIRE c.id IS UNIQUE",
 	} {
 		if _, err := session.ExecuteWrite(ctx, func(tx neo4j.ManagedTransaction) (any, error) {
 			return tx.Run(ctx, statement, nil)
@@ -250,6 +326,24 @@ func Merge(ctx context.Context, target Target, in Input) error {
 	steps = append(steps, step{"UNWIND $rows AS r MATCH (a {id: r.from}), (b {id: r.to}) MERGE (a)-[:HAS_NORM]->(b)", hasNormRows})
 	for _, relType := range []string{"HAS_LEGAL_BASIS", "HAS_BEARER", "HAS_OBJECT", "HAS_CONDITION", "HAS_EXCEPTION", "HAS_SANCTION"} {
 		steps = append(steps, step{"UNWIND $rows AS r MATCH (a {id: r.from}), (b {id: r.to}) MERGE (a)-[:" + relType + "]->(b)", normEdgeRows[relType]})
+	}
+	steps = append(steps,
+		step{"UNWIND $rows AS r MERGE (t:TermUse {id: r.id}) SET t += r", termUseRows},
+		step{"UNWIND $rows AS r MERGE (c:Concept {id: r.id}) SET c += r", mergedConceptRows},
+		// The decision properties are set on the edge rather than the node
+		// because the edge is the merge. Who joined these two readings and why
+		// is the fact worth keeping, and it belongs where the join is.
+		step{"UNWIND $rows AS r MATCH (a:TermUse {id: r.from}), (b:Concept {id: r.to}) " +
+			"MERGE (a)-[e:INSTANCE_OF]->(b) " +
+			"SET e.relation = r.relation, e.decided_by = r.decided_by, e.decided_at = r.decided_at, e.rationale = r.rationale",
+			instanceOfRows},
+		step{"UNWIND $rows AS r MATCH (a:TermUse {id: r.from}), (b:TermUse {id: r.to}) " +
+			"MERGE (a)-[e:DIFFERS_FROM]->(b) " +
+			"SET e.decided_by = r.decided_by, e.decided_at = r.decided_at, e.rationale = r.rationale, e.basis = r.basis",
+			differsFromRows},
+	)
+	for _, relType := range []string{"DEFINES_TERM", "IN_SCOPE", "REFERS_TO"} {
+		steps = append(steps, step{"UNWIND $rows AS r MATCH (a {id: r.from}), (b {id: r.to}) MERGE (a)-[:" + relType + "]->(b)", termUseEdgeRows[relType]})
 	}
 	for _, step := range steps {
 		if err := run(step.query, step.rows); err != nil {
