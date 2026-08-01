@@ -58,6 +58,23 @@ func (r *Registry) Class(id string) *Class {
 	return nil
 }
 
+// IsA reports whether class id equals ancestor or descends from it through
+// parent links. The walk is bounded by the class count, so a cyclic parent
+// chain terminates instead of spinning.
+func (r *Registry) IsA(id, ancestor string) bool {
+	for range len(r.Classes) + 1 {
+		if id == ancestor {
+			return true
+		}
+		c := r.Class(id)
+		if c == nil || c.Parent == "" {
+			return false
+		}
+		id = c.Parent
+	}
+	return false
+}
+
 func path(dir string, version int) string {
 	return filepath.Join(dir, fmt.Sprintf("v%d.json", version))
 }

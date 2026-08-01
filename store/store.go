@@ -46,6 +46,9 @@ func (s *Store) Terms() string    { return filepath.Join(s.Root, "terms") }
 func (s *Store) Ontology() string { return filepath.Join(s.Root, "ontology") }
 func (s *Store) Extracts() string { return filepath.Join(s.Root, "extract") }
 func (s *Store) Links() string    { return filepath.Join(s.Root, "link") }
+func (s *Store) Norms() string    { return filepath.Join(s.Root, "norms") }
+func (s *Store) Review() string   { return filepath.Join(s.Root, "review") }
+func (s *Store) Trusted() string  { return filepath.Join(s.Root, "trusted") }
 func (s *Store) Export() string   { return filepath.Join(s.Root, "export") }
 
 // WriteFile writes data atomically: a temp file in the same directory,

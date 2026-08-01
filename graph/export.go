@@ -16,6 +16,7 @@ import (
 	"github.com/tamnd/luatdo/cite"
 	"github.com/tamnd/luatdo/law"
 	"github.com/tamnd/luatdo/link"
+	"github.com/tamnd/luatdo/norm"
 	"github.com/tamnd/luatdo/ontology"
 	"github.com/tamnd/luatdo/term"
 )
@@ -28,6 +29,8 @@ CREATE CONSTRAINT concept_id IF NOT EXISTS FOR (c:LegalConcept) REQUIRE c.id IS 
 CREATE FULLTEXT INDEX provision_text IF NOT EXISTS FOR (p:Provision) ON EACH [p.text, p.heading];
 CREATE FULLTEXT INDEX document_title IF NOT EXISTS FOR (d:Document) ON EACH [d.title, d.title_en];
 CREATE FULLTEXT INDEX term_text IF NOT EXISTS FOR (t:Term) ON EACH [t.text];
+CREATE CONSTRAINT norm_id IF NOT EXISTS FOR (n:Norm) REQUIRE n.id IS UNIQUE;
+CREATE INDEX norm_type IF NOT EXISTS FOR (n:Norm) ON (n.norm_type);
 CREATE INDEX doc_effective IF NOT EXISTS FOR (d:Document) ON (d.effective_from);
 `
 
@@ -40,6 +43,7 @@ type Input struct {
 	Registry    *ontology.Registry
 	Definitions []term.Definition
 	Mentions    []link.Resolution
+	Statements  []norm.Record
 }
 
 // Export writes the CSV projection into dir.
@@ -177,10 +181,116 @@ func Export(dir string, in Input) error {
 		}); err != nil {
 		return err
 	}
+	if err := writeCSV(filepath.Join(dir, "norms.csv"),
+		[]string{"id:ID", "norm_type", "modality", "subject", "action", "object", "deadline", "sanction",
+			"evidence_quote", "evidence_start:int", "evidence_end:int", "confidence:float", "verdict",
+			"model", "ontology_version:int", ":LABEL"},
+		func(w *csv.Writer) error {
+			for i := range in.Statements {
+				r := &in.Statements[i]
+				s := &r.Statement
+				subject, object := "", ""
+				if s.Subject != nil {
+					subject = s.Subject.Text
+				}
+				if s.Object != nil {
+					object = s.Object.Text
+				}
+				verdict := ""
+				if r.Entailment != nil {
+					verdict = r.Entailment.Verdict
+				}
+				if err := w.Write([]string{r.ID, s.Type, s.Modality, subject, s.Action.Text, object,
+					s.Deadline, s.Sanction, s.Evidence.Quote, strconv.Itoa(s.Evidence.Start),
+					strconv.Itoa(s.Evidence.End), strconv.FormatFloat(s.Confidence, 'f', 2, 64),
+					verdict, r.Model, strconv.Itoa(r.OntologyVersion), "Norm"}); err != nil {
+					return err
+				}
+			}
+			return nil
+		}); err != nil {
+		return err
+	}
+	if err := writeCSV(filepath.Join(dir, "norm_details.csv"),
+		[]string{"id:ID", "text", ":LABEL"},
+		func(w *csv.Writer) error {
+			return eachNormDetail(in.Statements, func(id, text, label, _, _ string) error {
+				return w.Write([]string{id, text, label})
+			})
+		}); err != nil {
+		return err
+	}
+	if err := writeCSV(filepath.Join(dir, "has_norm.csv"),
+		[]string{":START_ID", ":END_ID", ":TYPE"},
+		func(w *csv.Writer) error {
+			for i := range in.Statements {
+				r := &in.Statements[i]
+				if err := w.Write([]string{r.ProvisionID, r.ID, "HAS_NORM"}); err != nil {
+					return err
+				}
+			}
+			return nil
+		}); err != nil {
+		return err
+	}
+	if err := writeCSV(filepath.Join(dir, "norm_edges.csv"),
+		[]string{":START_ID", ":END_ID", ":TYPE"},
+		func(w *csv.Writer) error {
+			for i := range in.Statements {
+				r := &in.Statements[i]
+				s := &r.Statement
+				if s.Subject != nil && s.Subject.ClassID != "" {
+					if err := w.Write([]string{r.ID, s.Subject.ClassID, "HAS_BEARER"}); err != nil {
+						return err
+					}
+				}
+				if s.Object != nil && s.Object.ClassID != "" {
+					if err := w.Write([]string{r.ID, s.Object.ClassID, "HAS_OBJECT"}); err != nil {
+						return err
+					}
+				}
+				if err := w.Write([]string{r.ID, r.ProvisionID, "HAS_LEGAL_BASIS"}); err != nil {
+					return err
+				}
+			}
+			return eachNormDetail(in.Statements, func(id, _, _, normID, relType string) error {
+				return w.Write([]string{normID, id, relType})
+			})
+		}); err != nil {
+		return err
+	}
 	if err := os.WriteFile(filepath.Join(dir, "schema.cypher"), []byte(Schema), 0o644); err != nil {
 		return err
 	}
 	return writeImportScripts(dir)
+}
+
+// eachNormDetail visits every condition, exception, and sanction node of the
+// statement set. Detail node IDs hang off the norm ID, so they are as
+// deterministic as everything else.
+func eachNormDetail(records []norm.Record, visit func(id, text, label, normID, relType string) error) error {
+	for i := range records {
+		r := &records[i]
+		for j, c := range r.Statement.Conditions {
+			id := fmt.Sprintf("%s:condition-%d", r.ID, j+1)
+			if err := visit(id, c, "Condition", r.ID, "HAS_CONDITION"); err != nil {
+				return err
+			}
+		}
+		for j, e := range r.Statement.Exceptions {
+			id := fmt.Sprintf("%s:exception-%d", r.ID, j+1)
+			if err := visit(id, e, "Exception", r.ID, "HAS_EXCEPTION"); err != nil {
+				return err
+			}
+		}
+		if r.Statement.Sanction != "" {
+			id := r.ID + ":sanction"
+			if err := visit(id, r.Statement.Sanction, "Sanction", r.ID, "HAS_SANCTION"); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func writeCSV(path string, header []string, body func(*csv.Writer) error) error {
@@ -208,7 +318,9 @@ func writeCSV(path string, header []string, body func(*csv.Writer) error) error 
 func writeImportScripts(dir string) error {
 	args := `database import full luatdo --overwrite-destination ` +
 		`--nodes=documents.csv --nodes=provisions.csv --nodes=terms.csv --nodes=concepts.csv ` +
-		`--relationships=contains.csv --relationships=cites.csv --relationships=defines.csv --relationships=mentions.csv`
+		`--nodes=norms.csv --nodes=norm_details.csv ` +
+		`--relationships=contains.csv --relationships=cites.csv --relationships=defines.csv ` +
+		`--relationships=mentions.csv --relationships=has_norm.csv --relationships=norm_edges.csv`
 	sh := "#!/bin/sh\n# Run from this directory with the database stopped.\nneo4j-admin " + args + "\n"
 	cmd := "@echo off\r\nrem Run from this directory with the database stopped.\r\nneo4j-admin " + args + "\r\n"
 	if err := os.WriteFile(filepath.Join(dir, "import.sh"), []byte(sh), 0o755); err != nil {
@@ -228,6 +340,7 @@ type Summary struct {
 	Defines    int `json:"defines"`
 	Concepts   int `json:"concepts"`
 	Mentions   int `json:"mentions"`
+	Norms      int `json:"norms"`
 }
 
 // Summarize counts the projection without writing it.
@@ -258,6 +371,7 @@ func Summarize(in Input) Summary {
 			s.Mentions++
 		}
 	}
+	s.Norms = len(in.Statements)
 	return s
 }
 
@@ -272,6 +386,9 @@ func (s Summary) String() string {
 	}
 	if s.Mentions > 0 {
 		out += fmt.Sprintf(", mentions %d", s.Mentions)
+	}
+	if s.Norms > 0 {
+		out += fmt.Sprintf(", norms %d", s.Norms)
 	}
 	return out
 }

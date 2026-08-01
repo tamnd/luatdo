@@ -239,11 +239,12 @@ func loadDoc(s *store.Store, provisionOrDocID string) (*law.Document, error) {
 func cmdPrompt(args []string) error {
 	fs := flag.NewFlagSet("prompt", flag.ContinueOnError)
 	dataDir := fs.String("data", "", "data directory")
+	pass := fs.String("pass", "mentions", "which prompt to print: mentions or norms")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 {
-		return fmt.Errorf("usage: luatdo prompt <provision-id>")
+		return fmt.Errorf("usage: luatdo prompt [--pass mentions|norms] <provision-id>")
 	}
 	provID := fs.Arg(0)
 	s, err := openStore(*dataDir)
@@ -262,9 +263,17 @@ func cmdPrompt(args []string) error {
 	if err != nil {
 		return err
 	}
-	e := &extract.Extractor{Registry: reg}
+	var instructions string
+	switch *pass {
+	case "mentions":
+		instructions = (&extract.Extractor{Registry: reg}).Instructions()
+	case "norms":
+		instructions = (&extract.NormRunner{Registry: reg}).Instructions()
+	default:
+		return fmt.Errorf("unknown pass %q, want mentions or norms", *pass)
+	}
 	fmt.Println("--- instructions ---")
-	fmt.Println(e.Instructions())
+	fmt.Println(instructions)
 	fmt.Println("--- input ---")
 	fmt.Println(w.Prompt())
 	return nil

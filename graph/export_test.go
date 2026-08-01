@@ -8,6 +8,7 @@ import (
 
 	"github.com/tamnd/luatdo/cite"
 	"github.com/tamnd/luatdo/law"
+	"github.com/tamnd/luatdo/norm"
 )
 
 func fixture() ([]*law.Document, []cite.Link) {
@@ -83,6 +84,68 @@ func TestExport(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
 			t.Errorf("missing %s: %v", name, err)
 		}
+	}
+}
+
+func TestExportNorms(t *testing.T) {
+	docs, links := fixture()
+	statements := []norm.Record{{
+		ID:          "vn:norm:abc123",
+		DocID:       docs[0].ID,
+		ProvisionID: docs[0].Provisions[1].ID,
+		Statement: norm.Statement{
+			Type:       "duty",
+			Subject:    &norm.Ref{Text: "người sử dụng lao động", ClassID: "vn-legal:Employer"},
+			Action:     norm.Ref{Text: "trả lương"},
+			Conditions: []string{"khi đến kỳ hạn"},
+			Exceptions: []string{"trừ trường hợp bất khả kháng"},
+			Sanction:   "phạt tiền",
+			Evidence:   norm.Evidence{Quote: "phải trả lương", Start: 10, End: 30},
+			Confidence: 0.94,
+		},
+		Status:          "verified",
+		Entailment:      &norm.Judgment{Verdict: norm.VerdictEntailed},
+		Model:           "test-model",
+		OntologyVersion: 1,
+	}}
+	dir := t.TempDir()
+	if err := Export(dir, Input{Docs: docs, Links: links, Statements: statements}); err != nil {
+		t.Fatalf("Export: %v", err)
+	}
+
+	norms := readCSV(t, filepath.Join(dir, "norms.csv"))
+	if len(norms) != 2 {
+		t.Fatalf("norms.csv rows = %d, want header plus 1", len(norms))
+	}
+	row := norms[1]
+	if row[0] != "vn:norm:abc123" || row[1] != "duty" || row[12] != "entailed" || row[13] != "test-model" {
+		t.Errorf("norm row = %v, provenance must ride on the node", row)
+	}
+
+	details := readCSV(t, filepath.Join(dir, "norm_details.csv"))
+	if len(details) != 4 {
+		t.Errorf("norm_details.csv rows = %d, want condition, exception, and sanction", len(details))
+	}
+
+	hasNorm := readCSV(t, filepath.Join(dir, "has_norm.csv"))
+	if len(hasNorm) != 2 || hasNorm[1][0] != docs[0].Provisions[1].ID {
+		t.Errorf("has_norm rows = %v", hasNorm)
+	}
+
+	edges := readCSV(t, filepath.Join(dir, "norm_edges.csv"))
+	types := map[string]int{}
+	for _, e := range edges[1:] {
+		types[e[2]]++
+	}
+	for _, want := range []string{"HAS_BEARER", "HAS_LEGAL_BASIS", "HAS_CONDITION", "HAS_EXCEPTION", "HAS_SANCTION"} {
+		if types[want] != 1 {
+			t.Errorf("edge %s count = %d, want 1", want, types[want])
+		}
+	}
+
+	s := Summarize(Input{Docs: docs, Links: links, Statements: statements})
+	if s.Norms != 1 {
+		t.Errorf("Summarize norms = %d", s.Norms)
 	}
 }
 

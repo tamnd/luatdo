@@ -128,11 +128,54 @@ func Merge(ctx context.Context, target Target, in Input) error {
 		})
 	}
 
+	var normRows, hasNormRows []map[string]any
+	detailRows := map[string][]map[string]any{}
+	normEdgeRows := map[string][]map[string]any{}
+	for i := range in.Statements {
+		r := &in.Statements[i]
+		s := &r.Statement
+		subject, object := "", ""
+		if s.Subject != nil {
+			subject = s.Subject.Text
+		}
+		if s.Object != nil {
+			object = s.Object.Text
+		}
+		verdict := ""
+		if r.Entailment != nil {
+			verdict = r.Entailment.Verdict
+		}
+		normRows = append(normRows, map[string]any{
+			"id": r.ID, "norm_type": s.Type, "modality": s.Modality,
+			"subject": subject, "action": s.Action.Text, "object": object,
+			"deadline": s.Deadline, "sanction": s.Sanction,
+			"evidence_quote": s.Evidence.Quote, "evidence_start": s.Evidence.Start,
+			"evidence_end": s.Evidence.End, "confidence": s.Confidence,
+			"verdict": verdict, "model": r.Model, "ontology_version": r.OntologyVersion,
+		})
+		hasNormRows = append(hasNormRows, map[string]any{"from": r.ProvisionID, "to": r.ID})
+		normEdgeRows["HAS_LEGAL_BASIS"] = append(normEdgeRows["HAS_LEGAL_BASIS"], map[string]any{"from": r.ID, "to": r.ProvisionID})
+		if s.Subject != nil && s.Subject.ClassID != "" {
+			normEdgeRows["HAS_BEARER"] = append(normEdgeRows["HAS_BEARER"], map[string]any{"from": r.ID, "to": s.Subject.ClassID})
+		}
+		if s.Object != nil && s.Object.ClassID != "" {
+			normEdgeRows["HAS_OBJECT"] = append(normEdgeRows["HAS_OBJECT"], map[string]any{"from": r.ID, "to": s.Object.ClassID})
+		}
+	}
+	if err := eachNormDetail(in.Statements, func(id, text, label, normID, relType string) error {
+		detailRows[label] = append(detailRows[label], map[string]any{"id": id, "text": text})
+		normEdgeRows[relType] = append(normEdgeRows[relType], map[string]any{"from": normID, "to": id})
+		return nil
+	}); err != nil {
+		return err
+	}
+
 	for _, statement := range []string{
 		"CREATE CONSTRAINT doc_id IF NOT EXISTS FOR (d:Document) REQUIRE d.id IS UNIQUE",
 		"CREATE CONSTRAINT prov_id IF NOT EXISTS FOR (p:Provision) REQUIRE p.id IS UNIQUE",
 		"CREATE CONSTRAINT term_id IF NOT EXISTS FOR (t:Term) REQUIRE t.id IS UNIQUE",
 		"CREATE CONSTRAINT concept_id IF NOT EXISTS FOR (c:LegalConcept) REQUIRE c.id IS UNIQUE",
+		"CREATE CONSTRAINT norm_id IF NOT EXISTS FOR (n:Norm) REQUIRE n.id IS UNIQUE",
 	} {
 		if _, err := session.ExecuteWrite(ctx, func(tx neo4j.ManagedTransaction) (any, error) {
 			return tx.Run(ctx, statement, nil)
@@ -141,10 +184,11 @@ func Merge(ctx context.Context, target Target, in Input) error {
 		}
 	}
 
-	steps := []struct {
+	type step struct {
 		query string
 		rows  []map[string]any
-	}{
+	}
+	steps := []step{
 		{"UNWIND $rows AS r MERGE (d:Document {id: r.id}) SET d += r", docRows},
 		{"UNWIND $rows AS r MERGE (p:Provision {id: r.id}) SET p += r", provRows},
 		{"UNWIND $rows AS r MATCH (a {id: r.from}), (b {id: r.to}) MERGE (a)-[:CONTAINS]->(b)", containsRows},
@@ -154,6 +198,16 @@ func Merge(ctx context.Context, target Target, in Input) error {
 		{"UNWIND $rows AS r MERGE (c:LegalConcept {id: r.id}) SET c.label_vi = r.label_vi, c.parent = r.parent", conceptRows},
 		{"UNWIND $rows AS r MATCH (a {id: r.from}), (b {id: r.to}) MERGE (a)-[d:DEFINES]->(b) SET d.connective = r.connective", definesRows},
 		{"UNWIND $rows AS r MATCH (a {id: r.from}), (b {id: r.to}) MERGE (a)-[m:MENTIONS]->(b) SET m.text = r.text, m.class_id = r.class_id, m.score = r.score, m.basis = r.basis", mentionsRows},
+		{"UNWIND $rows AS r MERGE (n:Norm {id: r.id}) SET n += r", normRows},
+	}
+	// Detail node labels and norm relationship types are static per query, so
+	// each group gets its own MERGE instead of a dynamic-label procedure.
+	for _, label := range []string{"Condition", "Exception", "Sanction"} {
+		steps = append(steps, step{"UNWIND $rows AS r MERGE (n:" + label + " {id: r.id}) SET n.text = r.text", detailRows[label]})
+	}
+	steps = append(steps, step{"UNWIND $rows AS r MATCH (a {id: r.from}), (b {id: r.to}) MERGE (a)-[:HAS_NORM]->(b)", hasNormRows})
+	for _, relType := range []string{"HAS_LEGAL_BASIS", "HAS_BEARER", "HAS_OBJECT", "HAS_CONDITION", "HAS_EXCEPTION", "HAS_SANCTION"} {
+		steps = append(steps, step{"UNWIND $rows AS r MATCH (a {id: r.from}), (b {id: r.to}) MERGE (a)-[:" + relType + "]->(b)", normEdgeRows[relType]})
 	}
 	for _, step := range steps {
 		if err := run(step.query, step.rows); err != nil {
