@@ -47,6 +47,8 @@ docker run -d --name luatdo-neo4j -p 7474:7474 -p 7687:7687 \
 luatdo fetch uts_vlc
 luatdo parse
 luatdo cite
+luatdo terms
+luatdo ontology init
 luatdo export neo4j
 ```
 
@@ -66,8 +68,13 @@ RETURN path
 | `luatdo fetch` | Download a pinned dataset revision into the immutable raw store |
 | `luatdo parse` | Parse raw documents into the canonical model with stable structural IDs |
 | `luatdo cite` | Resolve citations and amendment links from official metadata and in-text patterns |
-| `luatdo extract` | Schema-constrained LLM extraction of entities and norms |
-| `luatdo verify` | Entailment judge over extracted statements |
+| `luatdo terms` | Extract defined terms from interpretation articles, no model involved |
+| `luatdo ontology` | Manage the versioned class and predicate registry and its candidates queue |
+| `luatdo extract` | Schema-constrained LLM extraction of entity mentions under the closed registry |
+| `luatdo link` | Resolve mentions against the registry and the defined term table, with scores |
+| `luatdo norms` | Extract norm statements and verify them with the entailment judge |
+| `luatdo prompt` | Print the exact prompt for a provision without calling a model |
+| `luatdo review` | Work the human review queue for gated statements |
 | `luatdo build` | Assemble verified statements into the trusted store |
 | `luatdo export neo4j` | Project the trusted store into Neo4j, full import or incremental merge |
 | `luatdo coverage` | Report what is parsed, extracted, verified, and exported, recomputed from disk |
