@@ -144,6 +144,7 @@ type DirectionScore struct {
 	Flipped   int `json:"flipped"`
 	Unclear   int `json:"unclear"`
 	Unchecked int `json:"unchecked"`
+	Symmetric int `json:"symmetric"`
 }
 
 // ScoreDirection counts the verdicts over a set of edges.
@@ -158,6 +159,8 @@ func ScoreDirection(edges []Edge) DirectionScore {
 			s.Flipped++
 		case DirectionUnclear:
 			s.Unclear++
+		case DirectionSymmetric:
+			s.Symmetric++
 		default:
 			s.Unchecked++
 		}
@@ -179,8 +182,8 @@ func (s DirectionScore) Accuracy() float64 {
 // String prints the metric with its denominators visible.
 func (s DirectionScore) String() string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "direction      %d edges: %d agreed, %d flipped, %d unclear, %d unchecked\n",
-		s.Edges, s.Agreed, s.Flipped, s.Unclear, s.Unchecked)
+	fmt.Fprintf(&b, "direction      %d edges: %d agreed, %d flipped, %d unclear, %d unchecked, %d symmetric\n",
+		s.Edges, s.Agreed, s.Flipped, s.Unclear, s.Unchecked, s.Symmetric)
 	if decided := s.Agreed + s.Flipped; decided > 0 {
 		fmt.Fprintf(&b, "               %.1f%% of the %d the verifier could read, scored on its own and never folded into relation precision\n",
 			100*s.Accuracy(), decided)

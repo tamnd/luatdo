@@ -273,7 +273,13 @@ func conceptRead(s *store.Store, only string, limit int) error {
 				break
 			}
 			units++
+			// One unit takes a reasoning model minutes, so a pass over a
+			// definitions article is an hour of silence unless it says what it
+			// is doing. An hour of silence looks exactly like a hang, and the
+			// first person to see it here killed a run that was working.
+			started := time.Now()
 			job, err := reader.Read(context.Background(), &r.Units[i], scopeOf(r, &r.Units[i]))
+			fmt.Fprintf(os.Stderr, "  %4d %-60s %s\n", units, r.Units[i].ID, time.Since(started).Round(time.Second))
 			if job != nil {
 				usage = addAPIUsage(usage, job.Usage)
 				calls += len(job.Attempts)

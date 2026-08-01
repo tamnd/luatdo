@@ -158,6 +158,24 @@ func TestScoreDirectionKeepsWhatItCouldNotReadOutOfTheDenominator(t *testing.T) 
 		t.Errorf("the metric hides its denominators:\n%s", out)
 	}
 
+	// A symmetric type has no direction to get wrong, so it is counted apart
+	// from the ones the verifier read and apart from the ones it never saw.
+	// Rolling it into unchecked would read as work still to do, and rolling it
+	// into agreed would be counting a question nobody asked as a pass.
+	sym := ScoreDirection([]Edge{
+		{Direction: DirectionAgreed}, {Direction: DirectionFlipped},
+		{Direction: DirectionSymmetric}, {Direction: DirectionSymmetric},
+	})
+	if sym.Symmetric != 2 || sym.Unchecked != 0 || sym.Agreed != 1 {
+		t.Fatalf("score = %+v", sym)
+	}
+	if got := sym.Accuracy(); got != 0.5 {
+		t.Errorf("accuracy = %v, a symmetric edge landed in the denominator", got)
+	}
+	if !strings.Contains(sym.String(), "2 symmetric") {
+		t.Errorf("the symmetric edges are invisible:\n%s", sym.String())
+	}
+
 	// Nothing verified is not a perfect score, and saying so is the point.
 	empty := ScoreDirection([]Edge{{}, {}})
 	if empty.Accuracy() != 0 {

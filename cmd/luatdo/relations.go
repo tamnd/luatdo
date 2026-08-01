@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/tamnd/luatdo/api"
 	"github.com/tamnd/luatdo/concept"
@@ -250,8 +251,13 @@ func relationExtract(s *store.Store, dir, only string, limit, corrections int) e
 				continue
 			}
 			asked++
+			started := time.Now()
 			got, u, xerr := x.Extract(ctx, id, report.DocID, text, byProvision[id])
 			usage = addAPIUsage(usage, u)
+			// A provision takes a reasoning model minutes, and a pass that says
+			// nothing for an hour looks exactly like a hang.
+			fmt.Fprintf(os.Stderr, "  %-60s %d concepts, %d sightings, %s\n",
+				id, len(byProvision[id]), len(got), time.Since(started).Round(time.Second))
 			if xerr != nil {
 				fmt.Fprintf(os.Stderr, "  %s: %v\n", id, xerr)
 				failed++
@@ -375,13 +381,21 @@ func relationVerify(s *store.Store, dir string, limit, corrections int) error {
 	v := &relation.Verifier{Completer: eng.completer, Model: eng.model, MaxCorrections: corrections}
 
 	var usage api.Usage
-	checked := 0
+	checked, symmetric := 0, 0
 	ctx := context.Background()
 	for i := range edges {
 		if limit > 0 && checked >= limit {
 			break
 		}
 		if len(edges[i].Evidence) == 0 {
+			continue
+		}
+		if t := in.registry.Type(edges[i].Type); t != nil && t.Symmetric {
+			// A symmetric relation runs both ways by definition, so asking
+			// which way it points buys an unclear answer at the price of a
+			// model call. The first real run bought three of them.
+			edges[i].Direction = relation.DirectionSymmetric
+			symmetric++
 			continue
 		}
 		checked++
@@ -407,6 +421,9 @@ func relationVerify(s *store.Store, dir string, limit, corrections int) error {
 	}
 	score := relation.ScoreDirection(edges)
 	fmt.Print(score)
+	if symmetric > 0 {
+		fmt.Printf("               %d edges of a symmetric type were not asked about, there is no direction in them to get wrong\n", symmetric)
+	}
 	fmt.Printf("usage %d input, %d output, %d total tokens\n", usage.InputTokens, usage.OutputTokens, usage.TotalTokens)
 	reportRoutes(eng)
 	return nil

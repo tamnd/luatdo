@@ -300,6 +300,12 @@ const (
 	DirectionFlipped    = "flipped"  // the verifier read it the other way
 	DirectionUnclear    = "unclear"  // the verifier could not tell from the quote
 	DirectionDisputed   = "disputed" // sources disagree across the supporting evidence
+
+	// DirectionSymmetric is a relation type that runs both ways by definition,
+	// so there is no direction to get wrong and no question to ask. The first
+	// real run spent three model calls asking which way ALTERNATIVE_TO points
+	// and got three unclear answers, which is the only answer available.
+	DirectionSymmetric = "symmetric"
 )
 
 // Key identifies an edge for folding. Direction is part of it, because a
