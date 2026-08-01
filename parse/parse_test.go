@@ -230,6 +230,173 @@ func TestParseBareClauseNumber(t *testing.T) {
 	}
 }
 
+// decisionBody is the shape almost every provincial decision takes: three
+// articles of housekeeping, a signature block, and then the regulation that
+// carries the entire substance travelling underneath as an annex. The annex
+// restarts its article numbering at one.
+const decisionBody = `**Số hiệu:** 01/2019/QĐ-UBND
+
+---
+
+ỦY BAN NHÂN DÂN TỈNH BẮC GIANG
+
+Số: 01/2019/QĐ-UBND
+
+QUYẾT ĐỊNH
+
+Ban hành Quy định về quản lý đầu tư
+
+Điều 1. Ban hành kèm theo Quyết định này Quy định về quản lý đầu tư và xây dựng.
+
+Điều 2. Quyết định này có hiệu lực kể từ ngày 20 tháng 01 năm 2019.
+
+TM. ỦY BAN NHÂN DÂN
+
+CHỦ TỊCH
+
+Nguyễn Văn Linh
+
+QUY ĐỊNH
+
+Về quản lý đầu tư và xây dựng
+
+(Ban hành kèm theo Quyết định số 01/2019/QĐ-UBND ngày 10 tháng 01 năm 2019 của Ủy ban nhân dân tỉnh Bắc Giang)
+
+Chương I
+
+QUY ĐỊNH CHUNG
+
+Điều 1. Phạm vi điều chỉnh
+
+Quy định này quy định về quản lý đầu tư trên địa bàn tỉnh.
+
+Điều 2. Giải thích từ ngữ
+
+Trong Quy định này, các từ ngữ dưới đây được hiểu như sau:
+
+1. Chủ đầu tư là cơ quan được giao quản lý dự án.
+
+Chương II
+
+QUẢN LÝ ĐẦU TƯ VÀ XÂY DỰNG CÁC DỰ ÁN
+
+SỬ DỤNG VỐN NHÀ NƯỚC
+
+Điều 3. Thẩm quyền quyết định
+
+Chủ tịch Ủy ban nhân dân tỉnh quyết định đầu tư.
+`
+
+func parseDecision(t *testing.T) *law.Document {
+	t.Helper()
+	return mustParse(t, Input{
+		OfficialNumber: "01/2019/QĐ-UBND",
+		IssuingBody:    "Ủy ban nhân dân tỉnh Bắc Giang",
+		DocType:        "quyết định",
+		Content:        decisionBody,
+	})
+}
+
+func TestParseAnnexAfterSignature(t *testing.T) {
+	doc := parseDecision(t)
+	if doc.Status != "parsed" {
+		t.Fatalf("status = %q: %s", doc.Status, doc.Quarantine)
+	}
+	annex := find(doc, doc.ID+":annex-1")
+	if annex == nil {
+		t.Fatal("the annex under the signature block was dropped")
+	}
+	if annex.Heading != "QUY ĐỊNH Về quản lý đầu tư và xây dựng" {
+		t.Errorf("annex heading = %q", annex.Heading)
+	}
+	if find(doc, doc.ID+":annex-1:article-3") == nil {
+		t.Error("article 3 of the annex missing: the walk stopped short")
+	}
+	for i := range doc.Provisions {
+		if strings.Contains(doc.Provisions[i].Text, "Nguyễn Văn Linh") ||
+			strings.Contains(doc.Provisions[i].Text, "kèm theo Quyết định số") {
+			t.Errorf("signature or issuance block leaked into %s: %q",
+				doc.Provisions[i].ID, doc.Provisions[i].Text)
+		}
+	}
+}
+
+// The two Điều 1 in this document are different provisions, and merging them
+// would attribute the annex's substance to the decision that issued it.
+func TestParseAnnexArticlesDoNotCollideWithTheParent(t *testing.T) {
+	doc := parseDecision(t)
+	parent := find(doc, doc.ID+":article-1")
+	inner := find(doc, doc.ID+":annex-1:article-1")
+	if parent == nil || inner == nil {
+		t.Fatalf("parent = %+v, annex article = %+v", parent, inner)
+	}
+	if !strings.HasPrefix(parent.Heading, "Ban hành kèm theo") {
+		t.Errorf("parent article 1 = %q", parent.Heading)
+	}
+	if inner.Heading != "Phạm vi điều chỉnh" {
+		t.Errorf("annex article 1 = %q", inner.Heading)
+	}
+	if inner.ParentID != doc.ID+":annex-1:chapter-1" {
+		t.Errorf("annex article 1 parent = %q, want the annex's own chapter", inner.ParentID)
+	}
+	if find(doc, doc.ID+":annex-1:chapter-1").ParentID != doc.ID+":annex-1" {
+		t.Error("the annex's chapter does not hang off the annex")
+	}
+}
+
+// A chapter title that runs past one line is one title, and a chapter that
+// opens after the first article still gets one.
+func TestParseChapterHeadingsAfterTheFirstArticle(t *testing.T) {
+	doc := parseDecision(t)
+	two := find(doc, doc.ID+":annex-1:chapter-2")
+	if two == nil {
+		t.Fatal("chapter 2 missing")
+	}
+	want := "QUẢN LÝ ĐẦU TƯ VÀ XÂY DỰNG CÁC DỰ ÁN SỬ DỤNG VỐN NHÀ NƯỚC"
+	if two.Heading != want {
+		t.Errorf("chapter 2 heading = %q, want %q", two.Heading, want)
+	}
+}
+
+// "QUY ĐỊNH" alone is also how a decision titles itself, so the kind line is
+// never enough on its own. Without the issuance formula there is no annex.
+func TestParseKindLineWithoutIssuanceIsNotAnAnnex(t *testing.T) {
+	body := "**Số hiệu:** 02/2019/QĐ-UBND\n\n---\n\nSố: 02/2019/QĐ-UBND\n\n" +
+		"Điều 1. Phạm vi\n\nNội dung điều một.\n\n" +
+		"QUY ĐỊNH\n\nNội dung tiếp theo của điều một.\n\n" +
+		"Điều 2. Hiệu lực\n\nNội dung điều hai.\n"
+	doc := mustParse(t, Input{OfficialNumber: "02/2019/QĐ-UBND",
+		IssuingBody: "Ủy ban nhân dân tỉnh Bắc Giang", Content: body})
+	if a := find(doc, doc.ID+":annex-1"); a != nil {
+		t.Fatalf("a bare kind line opened an annex: %+v", a)
+	}
+	if find(doc, doc.ID+":article-2") == nil {
+		t.Error("article 2 missing")
+	}
+}
+
+// A Phụ lục label is unambiguous on its own, because a reference to an annex
+// in running text never ends its line there.
+func TestParseAnnexLabelNeedsNoIssuance(t *testing.T) {
+	body := "**Số hiệu:** 03/2019/TT-BTC\n\n---\n\nSố: 03/2019/TT-BTC\n\n" +
+		"Điều 1. Phạm vi\n\nNội dung điều một.\n\n" +
+		"Điều 2. Hiệu lực\n\nNội dung điều hai.\n\n" +
+		"Nơi nhận:\n\nBộ trưởng\n\n" +
+		"PHỤ LỤC I\n\nDANH MỤC BIỂU MẪU\n\n" +
+		"Điều 1. Biểu mẫu số 01\n\nNội dung biểu mẫu.\n"
+	doc := mustParse(t, Input{OfficialNumber: "03/2019/TT-BTC", Content: body})
+	annex := find(doc, doc.ID+":annex-1")
+	if annex == nil {
+		t.Fatal("PHỤ LỤC I did not open an annex")
+	}
+	if annex.Heading != "PHỤ LỤC I DANH MỤC BIỂU MẪU" {
+		t.Errorf("annex heading = %q", annex.Heading)
+	}
+	if find(doc, doc.ID+":annex-1:article-1") == nil {
+		t.Error("the annex's article 1 is missing")
+	}
+}
+
 func TestParseDeterministic(t *testing.T) {
 	in := Input{OfficialNumber: "45/2019/QH14", Content: codeBody}
 	a := mustParse(t, in)

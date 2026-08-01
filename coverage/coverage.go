@@ -12,20 +12,28 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/tamnd/luatdo/anchor"
 	"github.com/tamnd/luatdo/law"
 	"github.com/tamnd/luatdo/store"
 )
 
 // Report is the state of one data directory.
 type Report struct {
-	Documents   int            `json:"documents"`
-	Parsed      int            `json:"parsed"`
-	Quarantined int            `json:"quarantined"`
-	Provisions  map[string]int `json:"provisions"`
-	Cited       int            `json:"cited_documents"`
-	Extractable int            `json:"extractable_provisions"`
-	Extracted   int            `json:"extracted_provisions"`
-	Quarantines []string       `json:"quarantines,omitempty"`
+	Documents int `json:"documents"`
+	Parsed    int `json:"parsed"`
+	// Content counts the documents that have provision text. It is not the
+	// same as Parsed: a document known only from the citation graph is a real
+	// node with no text, and averaging the two together is how a corpus gets
+	// reported as more complete than it is.
+	Content     int             `json:"content"`
+	Metadata    int             `json:"metadata_only"`
+	Quarantined int             `json:"quarantined"`
+	Provisions  map[string]int  `json:"provisions"`
+	Cited       int             `json:"cited_documents"`
+	Extractable int             `json:"extractable_provisions"`
+	Extracted   int             `json:"extracted_provisions"`
+	Anchoring   *anchor.Summary `json:"anchoring,omitempty"`
+	Quarantines []string        `json:"quarantines,omitempty"`
 }
 
 // Compute walks the docs and cite directories.
@@ -38,11 +46,17 @@ func Compute(s *store.Store) (*Report, error) {
 
 	if err := eachDoc(s, func(doc *law.Document) error {
 		r.Documents++
-		if doc.Status == "quarantined" {
+		switch doc.Status {
+		case "quarantined":
 			r.Quarantined++
 			r.Quarantines = append(r.Quarantines, doc.ID+": "+doc.Quarantine)
-		} else {
+		case "metadata":
+			r.Metadata++
+		default:
 			r.Parsed++
+		}
+		if len(doc.Provisions) > 0 {
+			r.Content++
 		}
 		for i := range doc.Provisions {
 			r.Provisions[doc.Provisions[i].Kind]++
@@ -66,7 +80,20 @@ func Compute(s *store.Store) (*Report, error) {
 			}
 		}
 	}
+	r.Anchoring = anchoring(s)
 	return r, nil
+}
+
+// anchoring reads the summary the anchor stage wrote, and returns nil when the
+// stage has not run. A stage that has not run reports as absent rather than as
+// zero, because zero and not attempted are different facts and only one of
+// them is about the corpus.
+func anchoring(s *store.Store) *anchor.Summary {
+	var sum anchor.Summary
+	if err := store.ReadJSON(filepath.Join(s.Anchor(), anchor.SummaryFile), &sum); err != nil {
+		return nil
+	}
+	return &sum
 }
 
 // Extractable returns the provisions of a document a norm pass should work on.
@@ -206,16 +233,31 @@ func eachDoc(s *store.Store, visit func(*law.Document) error) error {
 	return nil
 }
 
+// plural is enough English for the six provision kinds this report prints.
+func plural(kind string) string {
+	if strings.HasSuffix(kind, "x") {
+		return kind + "es"
+	}
+	return kind + "s"
+}
+
 func (r *Report) String() string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "documents  %d parsed, %d quarantined, %d total\n", r.Parsed, r.Quarantined, r.Documents)
-	for _, kind := range []string{"chapter", "section", "article", "clause", "point"} {
+	fmt.Fprintf(&b, "documents  %d parsed, %d metadata only, %d quarantined, %d total\n",
+		r.Parsed, r.Metadata, r.Quarantined, r.Documents)
+	fmt.Fprintf(&b, "content    %d documents carry provision text\n", r.Content)
+	for _, kind := range []string{"annex", "chapter", "section", "article", "clause", "point"} {
 		if n := r.Provisions[kind]; n > 0 {
-			fmt.Fprintf(&b, "%-10s %d\n", kind+"s", n)
+			fmt.Fprintf(&b, "%-10s %d\n", plural(kind), n)
 		}
 	}
 	fmt.Fprintf(&b, "cited      %d documents scanned\n", r.Cited)
-	fmt.Fprintf(&b, "norms      %d of %d units extracted, %d pending",
+	fmt.Fprintf(&b, "norms      %d of %d units extracted, %d pending\n",
 		r.Extracted, r.Extractable, r.Extractable-r.Extracted)
+	if r.Anchoring == nil {
+		fmt.Fprintf(&b, "anchoring  not run")
+		return b.String()
+	}
+	fmt.Fprintf(&b, "\n%s", r.Anchoring)
 	return b.String()
 }

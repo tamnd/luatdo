@@ -2,6 +2,7 @@ package coverage
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/tamnd/luatdo/law"
@@ -132,6 +133,40 @@ func TestQueueRecomputedFromDisk(t *testing.T) {
 	}
 	if report.Provisions["point"] != 3 {
 		t.Errorf("points = %d, the report counts every provision even though none is a unit", report.Provisions["point"])
+	}
+}
+
+// A document known only from the citation graph is a real node with no text.
+// Counting it as parsed would report the corpus as more complete than it is,
+// so content is counted separately from status.
+func TestReportCountsContentApartFromStatus(t *testing.T) {
+	s := &store.Store{Root: t.TempDir()}
+	full := sample("vn:law:2019:45-2019-qh14", "bộ luật")
+	pending := &law.Document{ID: "vn:law:2020:8-2020-tt-btc", DocType: "thông tư", Status: "metadata"}
+	empty := &law.Document{ID: "vn:law:2020:9-2020-qd-ttg", DocType: "quyết định", Status: "parsed"}
+	for _, doc := range []*law.Document{full, pending, empty} {
+		if err := store.WriteJSON(filepath.Join(s.Docs(), law.FileName(doc.ID)), doc); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	report, err := Compute(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Documents != 3 || report.Metadata != 1 || report.Parsed != 2 {
+		t.Errorf("report = %d documents, %d metadata only, %d parsed", report.Documents, report.Metadata, report.Parsed)
+	}
+	if report.Content != 1 {
+		t.Errorf("content = %d, want 1: only one of the three carries provision text", report.Content)
+	}
+	// The anchor stage has not run here, and a stage that has not run reports
+	// as absent rather than as zero.
+	if report.Anchoring != nil {
+		t.Errorf("anchoring = %+v, want nil before the stage has run", report.Anchoring)
+	}
+	if !strings.Contains(report.String(), "anchoring  not run") {
+		t.Errorf("report does not say the stage has not run:\n%s", report)
 	}
 }
 
