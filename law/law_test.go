@@ -53,6 +53,22 @@ func TestFileName(t *testing.T) {
 	}
 }
 
+func TestSlug(t *testing.T) {
+	cases := map[string]string{
+		"Người sử dụng lao động": "nguoi-su-dung-lao-dong",
+		"Hoạt động ngân hàng":    "hoat-dong-ngan-hang",
+		"Tổ chức tín dụng":       "to-chuc-tin-dung",
+		"  Quỹ  đầu tư  ":        "quy-dau-tu",
+		"ĐIỀU ƯỚC QUỐC TẾ":       "dieu-uoc-quoc-te",
+		"":                       "",
+	}
+	for in, want := range cases {
+		if got := Slug(in); got != want {
+			t.Errorf("Slug(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestRomanToArabic(t *testing.T) {
 	cases := map[string]string{
 		"I": "1", "IV": "4", "IX": "9", "XIV": "14", "XL": "40",

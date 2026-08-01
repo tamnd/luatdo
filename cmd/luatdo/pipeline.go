@@ -14,6 +14,7 @@ import (
 	"github.com/tamnd/luatdo/fetch"
 	"github.com/tamnd/luatdo/graph"
 	"github.com/tamnd/luatdo/law"
+	"github.com/tamnd/luatdo/ontology"
 	"github.com/tamnd/luatdo/parse"
 	"github.com/tamnd/luatdo/store"
 )
@@ -218,16 +219,20 @@ func cmdExport(args []string) error {
 	if err != nil {
 		return err
 	}
-	summary := graph.Summarize(docs, links)
+	in := graph.Input{Docs: docs, Links: links}
+	in.Definitions, _ = loadDefinitions(s)
+	in.Registry, _ = ontology.Load(s.Ontology())
+	in.Mentions, _ = loadResolutions(s)
+	summary := graph.Summarize(in)
 	if *merge {
-		if err := graph.Merge(context.Background(), graph.TargetFromEnv(), docs, links); err != nil {
+		if err := graph.Merge(context.Background(), graph.TargetFromEnv(), in); err != nil {
 			return err
 		}
 		fmt.Printf("export neo4j merge: %s\n", summary)
 		return nil
 	}
 	dir := filepath.Join(s.Export(), "neo4j")
-	if err := graph.Export(dir, docs, links); err != nil {
+	if err := graph.Export(dir, in); err != nil {
 		return err
 	}
 	fmt.Printf("export neo4j: %s\n", summary)

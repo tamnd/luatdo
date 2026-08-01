@@ -46,7 +46,7 @@ func readCSV(t *testing.T, path string) [][]string {
 func TestExport(t *testing.T) {
 	docs, links := fixture()
 	dir := t.TempDir()
-	if err := Export(dir, docs, links); err != nil {
+	if err := Export(dir, Input{Docs: docs, Links: links}); err != nil {
 		t.Fatalf("Export: %v", err)
 	}
 
@@ -88,7 +88,7 @@ func TestExport(t *testing.T) {
 
 func TestSummarize(t *testing.T) {
 	docs, links := fixture()
-	s := Summarize(docs, links)
+	s := Summarize(Input{Docs: docs, Links: links})
 	want := Summary{Documents: 2, Provisions: 2, Contains: 2, Cites: 1, Unresolved: 1}
 	if s != want {
 		t.Errorf("Summarize = %+v, want %+v", s, want)

@@ -204,6 +204,32 @@ func TestQuarantineNoArticles(t *testing.T) {
 	}
 }
 
+func TestParseBareClauseNumber(t *testing.T) {
+	body := "**Số hiệu:** 46/2010/QH12\n\n---\n\n" +
+		"Điều 6. Giải thích từ ngữ\n\n" +
+		"Trong Luật này, các từ ngữ dưới đây được hiểu như sau:\n\n" +
+		"1.\n\nHoạt động ngân hàng\n\nlà việc kinh doanh tiền tệ.\n\n" +
+		"2. Kiểm dịch y tế là việc kiểm tra y tế.\n\n" +
+		"Điều 7. Nguyên tắc\n\n1. Nguyên tắc thứ nhất.\n"
+	doc := mustParse(t, Input{OfficialNumber: "46/2010/QH12", Content: body})
+	if doc.Status != "parsed" {
+		t.Fatalf("status = %q: %s", doc.Status, doc.Quarantine)
+	}
+	var clause1 *law.Provision
+	for i := range doc.Provisions {
+		if doc.Provisions[i].ID == "vn:law:2010:46-2010-qh12:article-6:clause-1" {
+			clause1 = &doc.Provisions[i]
+		}
+	}
+	if clause1 == nil {
+		t.Fatal("the bare number line must open clause 1")
+	}
+	want := "Hoạt động ngân hàng\nlà việc kinh doanh tiền tệ."
+	if clause1.Text != want {
+		t.Errorf("clause 1 text = %q, want %q", clause1.Text, want)
+	}
+}
+
 func TestParseDeterministic(t *testing.T) {
 	in := Input{OfficialNumber: "45/2019/QH14", Content: codeBody}
 	a := mustParse(t, in)
