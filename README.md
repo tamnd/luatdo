@@ -286,16 +286,14 @@ The corpus falls into 966 strata, so a draw smaller than that reaches only the l
 A campaign is a long job against a metered service, so it is built to be interrupted.
 The queue is recomputed from disk on every run, work is committed one provision at a time, and a provision that fails leaves no artifact, which is exactly what puts it back in the queue next time.
 
-Model access is a routes file: named endpoints in rank order, each with its own credential and its own rate card.
+Model access is a routes file: named endpoints in rank order, each with its own credential and its own rate card. See [where the models come from](#where-the-models-come-from).
 
 ```sh
-luatdo doctor --suggest-routes > ~/.config/luatdo/routes.json
+luatdo doctor --write-routes
 luatdo doctor
 luatdo run --parallel auto
 ```
 
-Failover is per call and matched to the cause.
-A quota error cools that route for five minutes, a transport blip for thirty seconds, and an authentication failure disables it for the process because retrying a bad credential is pointless.
 Every call records which endpoint served it, so a corpus assembled from three endpoints can still say where each statement came from.
 
 Each provision reports what it cost:
@@ -311,6 +309,50 @@ An invented zero would quietly understate a campaign, so nothing invents one.
 The first interrupt drains: no new provision starts, the ones in flight finish and are written, and the accounting reports what actually ran.
 A second interrupt aborts.
 Every run writes a summary to `<data>/campaign/`, and `luatdo coverage --missing` prints what is left.
+
+## Where the models come from
+
+Reading two million norm units through a metered endpoint at list price is not a casual decision, and a project that only works when someone is willing to make it is a project that does not run.
+So a route is not one vendor.
+It is a named endpoint with a wire, a model, a rank, and the name of an environment variable holding its credential.
+
+There are three wires because the capacity is spread across three.
+
+- `chat` is `POST /v1/chat/completions`, which is what almost everything that is not OpenAI serves. The free tier in front of DeepSeek, Nemotron and Mimo speaks it, and so does a local Ollama.
+- `responses` is `POST /v1/responses`, which is what OpenAI serves.
+- `codex` is the backend the Codex CLI talks to, reached with the OAuth credential the CLI already left in `~/.codex/auth.json`. There is no URL to configure because it is not an endpoint anyone points at.
+
+A route file holds no secret.
+Credentials are read from the variable a route names in `api_key_env`, so the file can be committed, pasted into an issue, or copied to the other three machines with nothing to scrub.
+The codex wire needs no variable at all, because the credential is already on the machine.
+
+```json
+{"routes": [
+  {"name": "codex", "wire": "codex", "effort": "high", "rank": 10},
+  {"name": "free-deepseek", "wire": "chat", "base_url": "https://opencode.ai/zen/v1",
+   "model": "deepseek-v3.2-free", "api_key_env": "OPENCODE_API_KEY", "rank": 30}
+]}
+```
+
+`luatdo doctor --suggest-routes` asks every route what models it serves, keeps every rank you already have, disables a route whose model the endpoint stopped listing rather than deleting the row, and offers any newly catalogued free model as a new route with `disabled` set.
+It prints the suggestion to stdout.
+`--write-routes` writes it to the routes file instead, and refuses to overwrite a file that is already there, because the ranks in it were measured rather than guessed.
+A new route lands at the end of the free band so an unproven model never displaces one with evidence behind it, and it arrives disabled so a person decides whether it touches the graph at all.
+
+Failover is per call and matched to the cause.
+An authentication failure disables the route for the process, because retrying a bad credential is pointless.
+A model the endpoint does not serve disables it too, since a free tier catalogue that rotated is a permanent failure wearing the clothes of a transient one.
+A quota error cools the route until it clears, and when the provider states the reset, as the codex backend does for a plan window that can be days wide, that exact time is honoured rather than guessed at.
+Everything else is treated as transport: thirty seconds the first time, doubling on each consecutive failure to a ceiling of thirty minutes, and reset the moment the route answers.
+
+`luatdo doctor` probes every route and prints what it found, including the plan windows on a subscription route, which exist nowhere but the response headers.
+
+```text
+route codex          alive in 2.752s  plan plus, primary 6% of a 7d window, resets Sat 16:41
+route free-deepseek  alive in 2.682s
+route free-nemotron  failed: transport: chat stream error
+ready 3 of 4 routes alive
+```
 
 ## Deployment
 

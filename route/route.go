@@ -13,6 +13,7 @@ package route
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -24,20 +25,36 @@ import (
 	"time"
 
 	"github.com/tamnd/luatdo/api"
+	"github.com/tamnd/luatdo/codex"
 )
 
 // Route is one named endpoint.
 type Route struct {
-	Name       string   `json:"name"`
-	URL        string   `json:"url"`
-	Model      string   `json:"model"`
-	Effort     string   `json:"effort,omitempty"`
-	Rank       int      `json:"rank,omitempty"` // lower is tried first
-	APIKeyEnv  string   `json:"api_key_env,omitempty"`
-	Pricing    *Pricing `json:"pricing,omitempty"`
-	Disabled   bool     `json:"disabled,omitempty"`
-	Note       string   `json:"note,omitempty"`
-	MaxRetries int      `json:"max_retries,omitempty"`
+	Name string `json:"name"`
+	// Wire is the request format: chat, responses, or codex. Empty means
+	// responses when a url is given and chat otherwise, which is what the
+	// files written before this field existed meant.
+	Wire Wire `json:"wire,omitempty"`
+	// URL is a full endpoint, kept for the files that already name one.
+	URL string `json:"url,omitempty"`
+	// BaseURL may stop at the server root or end at /v1. WireCodex needs
+	// neither, because its address is not a thing anyone configures.
+	BaseURL string `json:"base_url,omitempty"`
+	Model   string `json:"model,omitempty"`
+	// Auth is the credential path for WireCodex. Empty means the default,
+	// which is the file the Codex CLI login already wrote.
+	Auth            string   `json:"auth,omitempty"`
+	Effort          string   `json:"effort,omitempty"`
+	Rank            int      `json:"rank,omitempty"` // lower is tried first
+	APIKeyEnv       string   `json:"api_key_env,omitempty"`
+	MaxOutputTokens int      `json:"max_output_tokens,omitempty"`
+	Pricing         *Pricing `json:"pricing,omitempty"`
+	Disabled        bool     `json:"disabled,omitempty"`
+	// Note carries why a route is ranked or disabled where it is. A disabled
+	// row with no explanation reads as an oversight the next time someone
+	// opens the file.
+	Note       string `json:"note,omitempty"`
+	MaxRetries int    `json:"max_retries,omitempty"`
 }
 
 // Pricing is a rate card in US dollars per million tokens. A route without one
@@ -114,12 +131,20 @@ func Load(path string) ([]Route, error) {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
 	var out []Route
+	seen := map[string]bool{}
 	for _, r := range f.Routes {
+		if err := r.Validate(); err != nil {
+			return nil, fmt.Errorf("parse %s: %w", path, err)
+		}
+		if seen[r.Name] {
+			return nil, fmt.Errorf("parse %s: route %s is listed twice", path, r.Name)
+		}
+		seen[r.Name] = true
+		// A disabled route is validated and then skipped. Validating it anyway
+		// means a typo in a row someone turned off gets found now rather than
+		// on the day they turn it back on.
 		if r.Disabled {
 			continue
-		}
-		if r.Name == "" || r.URL == "" || r.Model == "" {
-			return nil, fmt.Errorf("parse %s: route needs a name, a url, and a model", path)
 		}
 		out = append(out, r)
 	}
@@ -132,9 +157,16 @@ func Load(path string) ([]Route, error) {
 
 // Cooldowns per failure cause. A route that hit a quota is useless for a
 // while; a route that returned one bad gateway probably is not.
+//
+// The transport cooldown doubles with each consecutive failure up to the
+// ceiling, and resets the moment the route answers. A flat delay treats the
+// fiftieth failure of an endpoint that went away this morning exactly like the
+// first, which over an hours long campaign means retrying a dead host hundreds
+// of times and cluttering every report with it.
 const (
-	QuotaCooldown     = 5 * time.Minute
-	TransportCooldown = 30 * time.Second
+	QuotaCooldown        = 5 * time.Minute
+	TransportCooldown    = 30 * time.Second
+	MaxTransportCooldown = 30 * time.Minute
 )
 
 // Router is a Completer that tries routes in rank order, skipping the ones on
@@ -144,6 +176,7 @@ type Router struct {
 	routes    []Route
 	clients   []api.Completer
 	coolUntil []time.Time
+	strikes   []int
 	dead      []bool
 	stats     map[string]*Stat
 	now       func() time.Time
@@ -160,29 +193,50 @@ type Stat struct {
 }
 
 // New builds a router over the given routes. Each route's credential comes
-// from its api_key_env, so one file can mix a subscription endpoint and a
-// metered one without sharing a key.
+// from its api_key_env, so one file can mix a subscription, a free tier and a
+// metered endpoint without sharing a key between them.
+//
+// A route whose transport cannot be built at all is kept in the list and marked
+// dead. Dropping it would renumber everything after it and make the report say
+// a route was never tried when what happened is that it was misconfigured.
 func New(routes []Route) *Router {
 	r := &Router{
 		routes:    routes,
 		coolUntil: make([]time.Time, len(routes)),
+		strikes:   make([]int, len(routes)),
 		dead:      make([]bool, len(routes)),
 		stats:     map[string]*Stat{},
 		now:       time.Now,
 	}
-	for _, rt := range routes {
+	for i, rt := range routes {
 		retries := rt.MaxRetries
 		if retries == 0 {
 			retries = 2
 		}
-		r.clients = append(r.clients, &api.Client{
-			URL:        rt.URL,
-			APIKey:     os.Getenv(rt.APIKeyEnv),
-			MaxRetries: retries,
-		})
-		r.stats[rt.Name] = &Stat{Route: rt.Name}
+		client, err := rt.Client(0, retries, nil)
+		if err != nil {
+			client = broken{err}
+			r.dead[i] = true
+		}
+		r.clients = append(r.clients, client)
+		r.stats[rt.Name] = &Stat{Route: rt.Name, LastError: errorText(err)}
 	}
 	return r
+}
+
+// broken stands in for a route that could not be built, so the slices stay
+// aligned and the reason survives to the report.
+type broken struct{ err error }
+
+func (b broken) Complete(context.Context, api.Request) (api.Response, error) {
+	return api.Response{}, b.err
+}
+
+func errorText(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 // WithCompleters replaces the transports, which is how tests drive a router
@@ -205,7 +259,7 @@ func (r *Router) Complete(ctx context.Context, request api.Request) (api.Respons
 		rt := r.routes[i]
 		attempted = append(attempted, rt.Name)
 		call := request
-		call.Model = rt.Model
+		call.Model = rt.ModelName()
 		if call.Effort == "" {
 			call.Effort = rt.Effort
 		}
@@ -238,6 +292,7 @@ func (r *Router) succeed(i int, u api.Usage) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.coolUntil[i] = time.Time{}
+	r.strikes[i] = 0
 	s := r.stats[r.routes[i].Name]
 	s.Calls++
 	s.Usage = AddUsage(s.Usage, u)
@@ -250,14 +305,41 @@ func (r *Router) fail(i int, err error) {
 	s := r.stats[r.routes[i].Name]
 	s.Failures++
 	s.LastError = err.Error()
+	now := r.now()
 	switch Cause(err) {
 	case CauseAuth:
+		// Retrying a rejected credential is pointless until a person fixes it,
+		// and doing so for the rest of a six hour campaign is pointless a few
+		// thousand times.
+		r.dead[i] = true
+	case CauseModel:
+		// The endpoint is fine and does not serve this model. No amount of
+		// waiting changes that.
 		r.dead[i] = true
 	case CauseQuota:
-		r.coolUntil[i] = r.now().Add(QuotaCooldown)
+		r.coolUntil[i] = now.Add(quotaCooldown(err, now))
 	default:
-		r.coolUntil[i] = r.now().Add(TransportCooldown)
+		r.strikes[i]++
+		r.coolUntil[i] = now.Add(transportCooldown(r.strikes[i]))
 	}
+}
+
+// quotaCooldown prefers the reset the provider stated over a guess. A Codex
+// plan window can be days wide and the backend says exactly when it reopens, so
+// sleeping the five minute default against it would mean waking up to the same
+// wall a few hundred times.
+func quotaCooldown(err error, now time.Time) time.Duration {
+	if quota, ok := errors.AsType[*codex.QuotaError](err); ok {
+		if wait := quota.RetryAfter(now); wait > 0 {
+			return wait
+		}
+	}
+	return QuotaCooldown
+}
+
+func transportCooldown(strikes int) time.Duration {
+	wait := TransportCooldown << min(max(0, strikes-1), 16)
+	return min(wait, MaxTransportCooldown)
 }
 
 // Failure causes, matched from the transport error text because that is all a
@@ -265,13 +347,21 @@ func (r *Router) fail(i int, err error) {
 const (
 	CauseAuth      = "auth"
 	CauseQuota     = "quota"
+	CauseModel     = "model"
 	CauseTransport = "transport"
 )
 
 // Cause classifies a completion error.
+//
+// The order matters. A Codex quota error carries a 429 and the words usage
+// limit, and it is a quota answer rather than a rate limit one, so the typed
+// error is consulted before any string matching happens.
 func Cause(err error) string {
 	if err == nil {
 		return ""
+	}
+	if _, ok := errors.AsType[*codex.QuotaError](err); ok {
+		return CauseQuota
 	}
 	text := strings.ToLower(err.Error())
 	switch {
@@ -281,18 +371,29 @@ func Cause(err error) string {
 	case strings.Contains(text, "429") || strings.Contains(text, "quota") ||
 		strings.Contains(text, "rate limit") || strings.Contains(text, "insufficient_quota"):
 		return CauseQuota
+	// A model the endpoint does not serve is the one failure a free tier
+	// produces that looks transient and is not. The catalogue rotates, a slug
+	// that worked last week stops existing, and the route has to leave the run
+	// rather than come back every thirty seconds to be told the same thing.
+	case strings.Contains(text, "model_not_found") || strings.Contains(text, "unknown model") ||
+		strings.Contains(text, "does not exist") || strings.Contains(text, "is not supported"):
+		return CauseModel
 	default:
 		return CauseTransport
 	}
 }
 
 // Stats returns the per-route accounting in rank order.
+//
+// A route that was never called is left out, with one exception: a route whose
+// transport could not be built at all is reported anyway, because it carries
+// the reason and silence about it reads as a route nobody needed.
 func (r *Router) Stats() []Stat {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	var out []Stat
 	for _, rt := range r.routes {
-		if s := r.stats[rt.Name]; s != nil && (s.Calls > 0 || s.Failures > 0) {
+		if s := r.stats[rt.Name]; s != nil && (s.Calls > 0 || s.Failures > 0 || s.LastError != "") {
 			out = append(out, *s)
 		}
 	}
@@ -304,6 +405,10 @@ func (r *Router) Totals() (api.Usage, Cost) {
 	var usage api.Usage
 	cost := Cost{Available: true}
 	for _, s := range r.Stats() {
+		if s.Calls == 0 {
+			// A route that spent nothing cannot make the total unknown.
+			continue
+		}
 		usage = AddUsage(usage, s.Usage)
 		cost = cost.Add(s.Cost)
 	}
@@ -407,11 +512,17 @@ func (m *Meter) Routes() string {
 // Probe is one route's health as reported by doctor.
 type Probe struct {
 	Route   string        `json:"route"`
+	Wire    Wire          `json:"wire,omitempty"`
 	Model   string        `json:"model"`
 	Alive   bool          `json:"alive"`
 	Latency time.Duration `json:"latency"`
 	Error   string        `json:"error,omitempty"`
 	Cause   string        `json:"cause,omitempty"`
+	// Limits is the plan state a codex route reports on the way past. There is
+	// no usage endpoint anywhere, so a probe is the only chance to read it, and
+	// a plan at 97 percent is worth knowing before a campaign starts rather
+	// than an hour into one.
+	Limits *codex.Limits `json:"limits,omitempty"`
 }
 
 // Doctor probes every route with a trivial completion and reports which are
@@ -425,15 +536,21 @@ func Doctor(ctx context.Context, routes []Route, clients []api.Completer, now fu
 	for i, rt := range routes {
 		start := now()
 		_, err := clients[i].Complete(ctx, api.Request{
-			Model: rt.Model,
+			Model: rt.ModelName(),
 			Input: "ping",
 		})
-		p := Probe{Route: rt.Name, Model: rt.Model, Latency: now().Sub(start)}
+		p := Probe{Route: rt.Name, Wire: rt.wire(), Model: rt.ModelName(), Latency: now().Sub(start)}
 		if err != nil {
 			p.Error = err.Error()
 			p.Cause = Cause(err)
 		} else {
 			p.Alive = true
+		}
+		if client, ok := clients[i].(interface{ Limits() codex.Limits }); ok {
+			limits := client.Limits()
+			if !limits.ReadAt.IsZero() {
+				p.Limits = &limits
+			}
 		}
 		out = append(out, p)
 	}
@@ -441,16 +558,16 @@ func Doctor(ctx context.Context, routes []Route, clients []api.Completer, now fu
 }
 
 // Clients returns one transport per route, for doctor and other callers that
-// need to address routes individually.
+// need to address routes individually. No retries: a probe that retries is
+// measuring patience rather than health.
 func Clients(routes []Route, httpClient *http.Client) []api.Completer {
-	var out []api.Completer
+	out := make([]api.Completer, 0, len(routes))
 	for _, rt := range routes {
-		out = append(out, &api.Client{
-			URL:        rt.URL,
-			APIKey:     os.Getenv(rt.APIKeyEnv),
-			HTTPClient: httpClient,
-			MaxRetries: 0,
-		})
+		client, err := rt.Client(0, 0, httpClient)
+		if err != nil {
+			client = broken{err}
+		}
+		out = append(out, client)
 	}
 	return out
 }

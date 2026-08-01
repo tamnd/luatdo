@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/tamnd/luatdo/api"
+	"github.com/tamnd/luatdo/codex"
 )
 
 // scripted is a Completer that answers from a list, so the router can be
@@ -289,5 +290,162 @@ func TestDefaultPathHonoursEnvironment(t *testing.T) {
 	t.Setenv("LUATDO_ROUTES", filepath.Join("somewhere", "routes.json"))
 	if got := DefaultPath(); got != filepath.Join("somewhere", "routes.json") {
 		t.Errorf("DefaultPath = %q", got)
+	}
+}
+
+func TestQuotaCooldownHonoursTheResetTheProviderStated(t *testing.T) {
+	// An ordinary rate limit clears in seconds and a plan window can be days
+	// wide. Guessing five minutes at a wall the backend already dated would
+	// spend the whole campaign rediscovering that it is still there.
+	clock := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	now := func() time.Time { return clock }
+	quota := &codex.QuotaError{PlanType: "plus", ResetsAt: clock.Add(6 * time.Hour)}
+	first := &scripted{replies: []reply{{err: quota}}}
+	second := &scripted{replies: []reply{{text: "ok"}}}
+	r := routerFor(t, []api.Completer{first, second}, now)
+
+	if _, err := r.Complete(context.Background(), api.Request{Input: "x"}); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if got := Cause(quota); got != CauseQuota {
+		t.Errorf("Cause = %q, a typed quota error must be read before any string is matched", got)
+	}
+
+	// Well past the generic quota cooldown and still inside the stated window.
+	clock = clock.Add(QuotaCooldown + time.Hour)
+	if _, err := r.Complete(context.Background(), api.Request{Input: "x"}); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if first.calls != 1 {
+		t.Errorf("first route called %d times, the plan window it named has not opened", first.calls)
+	}
+
+	clock = clock.Add(6 * time.Hour)
+	first.replies = []reply{{text: "back"}}
+	resp, err := r.Complete(context.Background(), api.Request{Input: "x"})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if resp.Route != "first" {
+		t.Errorf("Route = %q, want the route back once its window reopened", resp.Route)
+	}
+}
+
+func TestTransportCooldownEscalatesAndResetsOnAnAnswer(t *testing.T) {
+	// One dropped connection is noise. Twenty in a row is an endpoint that is
+	// down, and retrying it every thirty seconds for an hour is just noise of
+	// our own making.
+	if got := transportCooldown(1); got != TransportCooldown {
+		t.Errorf("first strike = %s, want %s", got, TransportCooldown)
+	}
+	if got := transportCooldown(3); got != 4*TransportCooldown {
+		t.Errorf("third strike = %s, want it doubled twice", got)
+	}
+	if got := transportCooldown(40); got != MaxTransportCooldown {
+		t.Errorf("fortieth strike = %s, want the ceiling", got)
+	}
+
+	clock := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	now := func() time.Time { return clock }
+	down := errors.New("dial tcp: connection refused")
+	first := &scripted{replies: []reply{{err: down}}}
+	r := routerFor(t, []api.Completer{first, &scripted{replies: []reply{{text: "ok"}}}}, now)
+
+	for range 2 {
+		if _, err := r.Complete(context.Background(), api.Request{Input: "x"}); err != nil {
+			t.Fatalf("Complete: %v", err)
+		}
+		clock = clock.Add(MaxTransportCooldown)
+	}
+	if first.calls != 2 {
+		t.Fatalf("first route called %d times, want it retried after each cooldown", first.calls)
+	}
+	// Two strikes means the third wait is longer than the first.
+	if _, err := r.Complete(context.Background(), api.Request{Input: "x"}); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	clock = clock.Add(TransportCooldown + time.Second)
+	if _, err := r.Complete(context.Background(), api.Request{Input: "x"}); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if first.calls != 3 {
+		t.Errorf("first route called %d times, the wait after three strikes is longer than one", first.calls)
+	}
+
+	// An answer clears the record, so a route that recovers is not still being
+	// punished for what happened an hour ago.
+	clock = clock.Add(MaxTransportCooldown)
+	first.replies, first.calls = []reply{{text: "back"}, {err: down}}, 0
+	if _, err := r.Complete(context.Background(), api.Request{Input: "x"}); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if _, err := r.Complete(context.Background(), api.Request{Input: "x"}); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	clock = clock.Add(TransportCooldown + time.Second)
+	before := first.calls
+	if _, err := r.Complete(context.Background(), api.Request{Input: "x"}); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if first.calls != before+1 {
+		t.Error("the strike count was not reset by a successful call")
+	}
+}
+
+func TestAModelTheEndpointDoesNotServeTakesTheRouteOutOfTheRun(t *testing.T) {
+	// Free tier catalogues rotate. A withdrawn model reads like a transient
+	// failure and is not one, so cooling the route just means finding out again
+	// every thirty seconds for the length of the campaign.
+	clock := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	gone := errors.New("chat API returned 400: model_not_found: mimo-free")
+	if got := Cause(gone); got != CauseModel {
+		t.Fatalf("Cause = %q, want %q", got, CauseModel)
+	}
+	first := &scripted{replies: []reply{{err: gone}}}
+	r := routerFor(t, []api.Completer{first, &scripted{replies: []reply{{text: "ok"}}}},
+		func() time.Time { return clock })
+
+	for range 3 {
+		if _, err := r.Complete(context.Background(), api.Request{Input: "x"}); err != nil {
+			t.Fatalf("Complete: %v", err)
+		}
+	}
+	clock = clock.Add(24 * time.Hour)
+	if _, err := r.Complete(context.Background(), api.Request{Input: "x"}); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if first.calls != 1 {
+		t.Errorf("route called %d times, a model the endpoint stopped serving does not come back on its own", first.calls)
+	}
+}
+
+func TestARouteThatCouldNotBeBuiltStillReportsWhy(t *testing.T) {
+	// Dropping it would renumber everything after it and leave the report
+	// saying a route was never tried, when what happened is that it was
+	// misconfigured.
+	r := New([]Route{
+		{Name: "typo", Wire: "grpc", BaseURL: "https://a", Model: "m"},
+		{Name: "good", URL: "https://b/v1", Model: "m"},
+	})
+	r.clients[1] = &scripted{replies: []reply{{text: "ok"}}}
+
+	resp, err := r.Complete(context.Background(), api.Request{Input: "x"})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if resp.Route != "good" {
+		t.Errorf("Route = %q", resp.Route)
+	}
+	var stat Stat
+	for _, s := range r.Stats() {
+		if s.Route == "typo" {
+			stat = s
+		}
+	}
+	if stat.Route == "" {
+		t.Fatal("the broken route vanished from the report")
+	}
+	if stat.LastError == "" {
+		t.Error("the broken route reported no reason, which reads as a route nobody tried")
 	}
 }
