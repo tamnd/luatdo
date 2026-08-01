@@ -15,6 +15,7 @@ import (
 	"github.com/tamnd/luatdo/anchor"
 	"github.com/tamnd/luatdo/law"
 	"github.com/tamnd/luatdo/store"
+	"github.com/tamnd/luatdo/subject"
 )
 
 // Report is the state of one data directory.
@@ -25,15 +26,16 @@ type Report struct {
 	// same as Parsed: a document known only from the citation graph is a real
 	// node with no text, and averaging the two together is how a corpus gets
 	// reported as more complete than it is.
-	Content     int             `json:"content"`
-	Metadata    int             `json:"metadata_only"`
-	Quarantined int             `json:"quarantined"`
-	Provisions  map[string]int  `json:"provisions"`
-	Cited       int             `json:"cited_documents"`
-	Extractable int             `json:"extractable_provisions"`
-	Extracted   int             `json:"extracted_provisions"`
-	Anchoring   *anchor.Summary `json:"anchoring,omitempty"`
-	Quarantines []string        `json:"quarantines,omitempty"`
+	Content     int              `json:"content"`
+	Metadata    int              `json:"metadata_only"`
+	Quarantined int              `json:"quarantined"`
+	Provisions  map[string]int   `json:"provisions"`
+	Cited       int              `json:"cited_documents"`
+	Extractable int              `json:"extractable_provisions"`
+	Extracted   int              `json:"extracted_provisions"`
+	Anchoring   *anchor.Summary  `json:"anchoring,omitempty"`
+	Subjects    *subject.Summary `json:"subjects,omitempty"`
+	Quarantines []string         `json:"quarantines,omitempty"`
 }
 
 // Compute walks the docs and cite directories.
@@ -81,6 +83,7 @@ func Compute(s *store.Store) (*Report, error) {
 		}
 	}
 	r.Anchoring = anchoring(s)
+	r.Subjects = subjects(s)
 	return r, nil
 }
 
@@ -91,6 +94,16 @@ func Compute(s *store.Store) (*Report, error) {
 func anchoring(s *store.Store) *anchor.Summary {
 	var sum anchor.Summary
 	if err := store.ReadJSON(filepath.Join(s.Anchor(), anchor.SummaryFile), &sum); err != nil {
+		return nil
+	}
+	return &sum
+}
+
+// subjects reads the summary the subject stage wrote, absent for absent the
+// same way anchoring is.
+func subjects(s *store.Store) *subject.Summary {
+	var sum subject.Summary
+	if err := store.ReadJSON(filepath.Join(s.Subject(), subject.SummaryFile), &sum); err != nil {
 		return nil
 	}
 	return &sum
@@ -254,6 +267,12 @@ func (r *Report) String() string {
 	fmt.Fprintf(&b, "cited      %d documents scanned\n", r.Cited)
 	fmt.Fprintf(&b, "norms      %d of %d units extracted, %d pending\n",
 		r.Extracted, r.Extractable, r.Extractable-r.Extracted)
+	if r.Subjects == nil {
+		fmt.Fprintf(&b, "subjects   not run\n")
+	} else {
+		fmt.Fprintf(&b, "subjects   %d of %d documents filed, %d domains and %d subdomains used\n",
+			r.Subjects.Assigned, r.Subjects.Documents, len(r.Subjects.ByDomain), len(r.Subjects.BySubdomain))
+	}
 	if r.Anchoring == nil {
 		fmt.Fprintf(&b, "anchoring  not run")
 		return b.String()

@@ -63,6 +63,7 @@ luatdo fetch uts_vlc
 luatdo parse
 luatdo cite
 luatdo anchor
+luatdo subjects
 luatdo terms
 luatdo ontology init
 luatdo export neo4j
@@ -85,6 +86,8 @@ RETURN path
 | `luatdo parse` | Parse raw documents into the canonical model with stable structural IDs |
 | `luatdo cite` | Resolve citations and amendment links from official metadata and in-text patterns |
 | `luatdo anchor` | Locate definitions articles, split them into units, harvest declared aliases |
+| `luatdo subjects` | File every document under the subject vocabulary, no model involved |
+| `luatdo sample` | Draw a reproducible sample stratified over subject and instrument type |
 | `luatdo terms` | Extract defined terms from interpretation articles, no model involved |
 | `luatdo ontology` | Manage the versioned class and predicate registry and its candidates queue |
 | `luatdo extract` | Schema-constrained LLM extraction of entity mentions under the closed registry |
@@ -130,6 +133,46 @@ Flattening the two would claim a definition the decision never made, so the anne
 Of the 104,674 documents that carry text, 7,207 have a definitions article, and those yield 49,343 definition units under 7,227 scopes, 3,193 of which are annexes.
 Alias declarations are harvested corpus wide rather than only inside definitions articles, because a drafter declares one wherever the phrase first appears: 37,431 of them, split about evenly between `sau đây gọi tắt là`, `sau đây gọi chung là` and `sau đây gọi là`.
 The 97,467 documents with text and no definitions article are listed by identifier in `<data>/anchor/unanchored.txt`, because a residue described is a residue nobody can check.
+
+## An article and what it says
+
+An article of a code outlives the words in it.
+Article 94 of the Labour Code is still article 94 after an amending law rewrites it, and a norm read out of the 2021 wording was never stated by the 2019 wording, so the two facts cannot live on one node.
+The structural node is a `Component` and the words are a `TextVersion`, one per wording, dated from the day it took effect.
+
+The rule for which one to point at is short.
+Citations point at the component, because a law that amends article 94 amends the article rather than one of its wordings.
+Norms, defined terms and extracted relations point at the text, because they are readings of particular words.
+A component with no text of its own, a chapter for instance, has no version at all rather than a version saying nothing.
+
+The projection carries `Component` and `Provision` as labels on the same node, so a query written against the earlier shape still runs.
+The alias ships through v0.1.0 and is dropped after it, and the drift check counts both labels and fails if they ever disagree.
+
+```cypher
+// What article 94 says today, and what it said before
+MATCH (c:Component {id:'vn:law:2019:45-2019-qh14:article-94'})-[:HAS_VERSION]->(v:TextVersion)
+RETURN v.from_date, v.to_date, v.text ORDER BY v.from_date
+```
+
+## What a document is about
+
+There is a subject vocabulary of 24 domains and 144 subdomains, hand written once against Vietnamese practice and shaped after EuroVoc.
+It is not an ontology and nothing downstream reasons over it.
+It has two uses: getting around a corpus of a hundred and twenty eight thousand documents, and drawing samples that are not all provincial land decisions.
+
+`luatdo subjects` files every document by matching cue phrases against its title, type and issuing body, and records the method it used on each assignment.
+A document lands in at most three subdomains and carries the domain of each up with it.
+The design calls for a distilled classifier trained on model labelled seed data, which is the standard way to get a cheap multi-label classifier over a large corpus, and that is not what ships here: this pass is lexical, and the assignments say `lexical` so nobody has to guess later.
+Measured against 65 corpus documents drawn at random and filed by hand, it recalls 0.91, and the six it misses are in the test table rather than relabelled out of it.
+
+Of 112,982 documents that are not quarantined it files 96,368 and leaves 16,614 under nothing, and it uses every domain and every subdomain in the vocabulary.
+The 16,614 are not a failure to route around: a title like `Quyết định về việc bãi bỏ Quyết định số 12/2004/QĐ-UB` says nothing about any subject, and a classifier that guessed one would be inventing navigation.
+They get a stratum of their own in the sample, because the documents nothing could read are the ones worth reading.
+
+`luatdo sample` draws from those assignments, stratified over subject crossed with instrument type.
+There is no random source in it.
+Each document is ranked inside its stratum by a hash of the seed and its identifier, so two machines agree on what a seed produces, and a corpus that gained a document keeps almost every pick it had.
+The corpus falls into 966 strata, so a draw smaller than that reaches only the largest ones, and the command says so rather than letting the number look like coverage.
 
 ## Running a campaign
 

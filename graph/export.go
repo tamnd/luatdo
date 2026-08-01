@@ -18,25 +18,40 @@ import (
 	"github.com/tamnd/luatdo/link"
 	"github.com/tamnd/luatdo/norm"
 	"github.com/tamnd/luatdo/ontology"
+	"github.com/tamnd/luatdo/subject"
 	"github.com/tamnd/luatdo/term"
 )
 
 // Schema is applied with cypher-shell after the imported database starts.
+//
+// The fulltext index over the text keeps the name provision_text even though
+// the text now hangs off TextVersion. An index is addressed by name in every
+// query that uses it, so renaming it would break the callers the Provision
+// alias label exists to keep working, and both go in the same release.
 const Schema = `CREATE CONSTRAINT doc_id IF NOT EXISTS FOR (d:Document) REQUIRE d.id IS UNIQUE;
-CREATE CONSTRAINT prov_id IF NOT EXISTS FOR (p:Provision) REQUIRE p.id IS UNIQUE;
+CREATE CONSTRAINT component_id IF NOT EXISTS FOR (c:Component) REQUIRE c.id IS UNIQUE;
+CREATE CONSTRAINT version_id IF NOT EXISTS FOR (v:TextVersion) REQUIRE v.id IS UNIQUE;
 CREATE CONSTRAINT term_id IF NOT EXISTS FOR (t:Term) REQUIRE t.id IS UNIQUE;
 CREATE CONSTRAINT concept_id IF NOT EXISTS FOR (c:LegalConcept) REQUIRE c.id IS UNIQUE;
-CREATE FULLTEXT INDEX provision_text IF NOT EXISTS FOR (p:Provision) ON EACH [p.text, p.heading];
+CREATE CONSTRAINT subject_id IF NOT EXISTS FOR (s:Subject) REQUIRE s.id IS UNIQUE;
+CREATE FULLTEXT INDEX provision_text IF NOT EXISTS FOR (v:TextVersion) ON EACH [v.text];
+CREATE FULLTEXT INDEX component_heading IF NOT EXISTS FOR (c:Component) ON EACH [c.heading];
 CREATE FULLTEXT INDEX document_title IF NOT EXISTS FOR (d:Document) ON EACH [d.title, d.title_en];
 CREATE FULLTEXT INDEX term_text IF NOT EXISTS FOR (t:Term) ON EACH [t.text];
 CREATE CONSTRAINT norm_id IF NOT EXISTS FOR (n:Norm) REQUIRE n.id IS UNIQUE;
 CREATE INDEX norm_type IF NOT EXISTS FOR (n:Norm) ON (n.norm_type);
 CREATE INDEX doc_effective IF NOT EXISTS FOR (d:Document) ON (d.effective_from);
+CREATE INDEX version_from IF NOT EXISTS FOR (v:TextVersion) ON (v.from_date);
 `
 
+// componentLabels is what a component node carries. law.ProvisionAlias rides
+// along until the release named beside it, so a query written against the
+// earlier projection still matches.
+const componentLabels = "Component;" + law.ProvisionAlias
+
 // Input is everything the projection is built from. Registry, Definitions,
-// and Mentions are optional; a corpus without the semantic layer projects the
-// document graph alone.
+// Mentions, Statements, and the subject pair are optional; a corpus without
+// the semantic layer projects the document graph alone.
 type Input struct {
 	Docs        []*law.Document
 	Links       []cite.Link
@@ -44,6 +59,11 @@ type Input struct {
 	Definitions []term.Definition
 	Mentions    []link.Resolution
 	Statements  []norm.Record
+	// Vocabulary and Subjects go together. The vocabulary supplies the nodes
+	// and the records supply the edges, so a projection given the records
+	// without the vocabulary would hang edges off subjects that do not exist.
+	Vocabulary *subject.Vocabulary
+	Subjects   []subject.Record
 }
 
 // Export writes the CSV projection into dir.
@@ -51,6 +71,15 @@ func Export(dir string, in Input) error {
 	docs, links := in.Docs, in.Links
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
+	}
+	// An export directory is read as a whole, and a file an earlier export wrote
+	// looks as current as the ones this one writes. Leaving provisions.csv beside
+	// components.csv would give a reader two answers to the same question, one of
+	// them from before the split, so the retired file goes.
+	for _, name := range []string{"provisions.csv"} {
+		if err := os.Remove(filepath.Join(dir, name)); err != nil && !os.IsNotExist(err) {
+			return err
+		}
 	}
 	if err := writeCSV(filepath.Join(dir, "documents.csv"),
 		[]string{"id:ID", "official_number", "issuing_body", "title", "title_en", "doc_type", "effective_from", "source", "source_url", "status", ":LABEL"},
@@ -64,18 +93,30 @@ func Export(dir string, in Input) error {
 		}); err != nil {
 		return err
 	}
-	if err := writeCSV(filepath.Join(dir, "provisions.csv"),
-		[]string{"id:ID", "kind", "number", "heading", "text", "position:int", ":LABEL"},
+	if err := writeCSV(filepath.Join(dir, "components.csv"),
+		[]string{"id:ID", "kind", "number", "heading", "position:int", "renumbered_from", ":LABEL"},
 		func(w *csv.Writer) error {
-			for _, d := range docs {
-				for i := range d.Provisions {
-					p := &d.Provisions[i]
-					if err := w.Write([]string{p.ID, p.Kind, p.Number, p.Heading, p.Text, strconv.Itoa(p.Position), "Provision"}); err != nil {
-						return err
-					}
-				}
-			}
-			return nil
+			return eachComponent(docs, func(c *law.Component) error {
+				return w.Write([]string{c.ID, c.Kind, c.Number, c.Heading, strconv.Itoa(c.Position), c.RenumberedFrom, componentLabels})
+			})
+		}); err != nil {
+		return err
+	}
+	if err := writeCSV(filepath.Join(dir, "text_versions.csv"),
+		[]string{"id:ID", "text", "text_hash", "from_date", "to_date", ":LABEL"},
+		func(w *csv.Writer) error {
+			return eachVersion(docs, func(v *law.TextVersion) error {
+				return w.Write([]string{v.ID, v.Text, v.TextHash, v.FromDate, v.ToDate, "TextVersion"})
+			})
+		}); err != nil {
+		return err
+	}
+	if err := writeCSV(filepath.Join(dir, "has_version.csv"),
+		[]string{":START_ID", ":END_ID", ":TYPE"},
+		func(w *csv.Writer) error {
+			return eachVersion(docs, func(v *law.TextVersion) error {
+				return w.Write([]string{v.ComponentID, v.ID, "HAS_VERSION"})
+			})
 		}); err != nil {
 		return err
 	}
@@ -150,6 +191,49 @@ func Export(dir string, in Input) error {
 				}
 			}
 			return nil
+		}); err != nil {
+		return err
+	}
+	if err := writeCSV(filepath.Join(dir, "subjects.csv"),
+		[]string{"id:ID", "label_vi", "label_en", "parent", ":LABEL"},
+		func(w *csv.Writer) error {
+			if in.Vocabulary == nil {
+				return nil
+			}
+			for _, s := range in.Vocabulary.Subjects {
+				if err := w.Write([]string{s.ID, s.LabelVI, s.LabelEN, s.Parent, "Subject"}); err != nil {
+					return err
+				}
+			}
+			return nil
+		}); err != nil {
+		return err
+	}
+	if err := writeCSV(filepath.Join(dir, "subject_parents.csv"),
+		[]string{":START_ID", ":END_ID", ":TYPE"},
+		func(w *csv.Writer) error {
+			if in.Vocabulary == nil {
+				return nil
+			}
+			for _, s := range in.Vocabulary.Subjects {
+				if s.Parent == "" {
+					continue
+				}
+				if err := w.Write([]string{s.ID, s.Parent, "BROADER"}); err != nil {
+					return err
+				}
+			}
+			return nil
+		}); err != nil {
+		return err
+	}
+	if err := writeCSV(filepath.Join(dir, "about_subject.csv"),
+		[]string{":START_ID", ":END_ID", "confidence:float", "method", ":TYPE"},
+		func(w *csv.Writer) error {
+			return eachAssignment(in, func(docID string, a *subject.Assignment) error {
+				confidence := strconv.FormatFloat(a.Confidence, 'f', 2, 64)
+				return w.Write([]string{docID, a.SubjectID, confidence, a.Method, "ABOUT_SUBJECT"})
+			})
 		}); err != nil {
 		return err
 	}
@@ -265,6 +349,56 @@ func Export(dir string, in Input) error {
 	return writeImportScripts(dir)
 }
 
+// eachComponent and eachVersion walk the split form of the corpus. Both call
+// law.Split rather than reading the provisions directly, so the projection and
+// the split cannot disagree about which provisions earn a version.
+func eachComponent(docs []*law.Document, visit func(*law.Component) error) error {
+	for _, d := range docs {
+		components, _ := law.Split(d)
+		for i := range components {
+			if err := visit(&components[i]); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func eachVersion(docs []*law.Document, visit func(*law.TextVersion) error) error {
+	for _, d := range docs {
+		_, versions := law.Split(d)
+		for i := range versions {
+			if err := visit(&versions[i]); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// eachAssignment visits every subject a document was filed under, skipping any
+// subject the vocabulary does not hold. An assignment file written against an
+// older vocabulary would otherwise point an edge at a node that is not in the
+// import, and neo4j-admin refuses the whole import over one such row.
+func eachAssignment(in Input, visit func(docID string, a *subject.Assignment) error) error {
+	if in.Vocabulary == nil {
+		return nil
+	}
+	for i := range in.Subjects {
+		r := &in.Subjects[i]
+		for j := range r.Subjects {
+			a := &r.Subjects[j]
+			if in.Vocabulary.Get(a.SubjectID) == nil {
+				continue
+			}
+			if err := visit(r.DocID, a); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 // eachNormDetail visits every condition, exception, and sanction node of the
 // statement set. Detail node IDs hang off the norm ID, so they are as
 // deterministic as everything else.
@@ -317,10 +451,13 @@ func writeCSV(path string, header []string, body func(*csv.Writer) error) error 
 // the export directory works on the Linux servers and the Windows machine.
 func writeImportScripts(dir string) error {
 	args := `database import full luatdo --overwrite-destination ` +
-		`--nodes=documents.csv --nodes=provisions.csv --nodes=terms.csv --nodes=concepts.csv ` +
+		`--nodes=documents.csv --nodes=components.csv --nodes=text_versions.csv ` +
+		`--nodes=terms.csv --nodes=concepts.csv --nodes=subjects.csv ` +
 		`--nodes=norms.csv --nodes=norm_details.csv ` +
-		`--relationships=contains.csv --relationships=cites.csv --relationships=defines.csv ` +
-		`--relationships=mentions.csv --relationships=has_norm.csv --relationships=norm_edges.csv`
+		`--relationships=contains.csv --relationships=has_version.csv --relationships=cites.csv ` +
+		`--relationships=defines.csv --relationships=mentions.csv ` +
+		`--relationships=subject_parents.csv --relationships=about_subject.csv ` +
+		`--relationships=has_norm.csv --relationships=norm_edges.csv`
 	sh := "#!/bin/sh\n# Run from this directory with the database stopped.\nneo4j-admin " + args + "\n"
 	cmd := "@echo off\r\nrem Run from this directory with the database stopped.\r\nneo4j-admin " + args + "\r\n"
 	if err := os.WriteFile(filepath.Join(dir, "import.sh"), []byte(sh), 0o755); err != nil {
@@ -331,25 +468,40 @@ func writeImportScripts(dir string) error {
 
 // Summary says what an export contained.
 type Summary struct {
-	Documents  int `json:"documents"`
-	Provisions int `json:"provisions"`
-	Contains   int `json:"contains"`
-	Cites      int `json:"cites"`
-	Unresolved int `json:"unresolved"`
-	Terms      int `json:"terms"`
-	Defines    int `json:"defines"`
-	Concepts   int `json:"concepts"`
-	Mentions   int `json:"mentions"`
-	Norms      int `json:"norms"`
+	Documents    int `json:"documents"`
+	Components   int `json:"components"`
+	TextVersions int `json:"text_versions"`
+	Contains     int `json:"contains"`
+	Cites        int `json:"cites"`
+	Unresolved   int `json:"unresolved"`
+	Terms        int `json:"terms"`
+	Defines      int `json:"defines"`
+	Concepts     int `json:"concepts"`
+	Mentions     int `json:"mentions"`
+	Subjects     int `json:"subjects"`
+	AboutSubject int `json:"about_subject"`
+	Norms        int `json:"norms"`
 }
 
 // Summarize counts the projection without writing it.
 func Summarize(in Input) Summary {
 	s := Summary{Documents: len(in.Docs)}
-	for _, d := range in.Docs {
-		s.Provisions += len(d.Provisions)
-		s.Contains += len(d.Provisions)
+	_ = eachComponent(in.Docs, func(*law.Component) error {
+		s.Components++
+		s.Contains++
+		return nil
+	})
+	_ = eachVersion(in.Docs, func(*law.TextVersion) error {
+		s.TextVersions++
+		return nil
+	})
+	if in.Vocabulary != nil {
+		s.Subjects = len(in.Vocabulary.Subjects)
 	}
+	_ = eachAssignment(in, func(string, *subject.Assignment) error {
+		s.AboutSubject++
+		return nil
+	})
 	for _, l := range in.Links {
 		if l.ToDoc == "" {
 			s.Unresolved++
@@ -376,13 +528,16 @@ func Summarize(in Input) Summary {
 }
 
 func (s Summary) String() string {
-	out := fmt.Sprintf("documents %d, provisions %d, contains %d, cites %d, unresolved %d",
-		s.Documents, s.Provisions, s.Contains, s.Cites, s.Unresolved)
+	out := fmt.Sprintf("documents %d, components %d, versions %d, contains %d, cites %d, unresolved %d",
+		s.Documents, s.Components, s.TextVersions, s.Contains, s.Cites, s.Unresolved)
 	if s.Terms > 0 {
 		out += fmt.Sprintf(", terms %d, defines %d", s.Terms, s.Defines)
 	}
 	if s.Concepts > 0 {
 		out += fmt.Sprintf(", concepts %d", s.Concepts)
+	}
+	if s.Subjects > 0 {
+		out += fmt.Sprintf(", subjects %d, about %d", s.Subjects, s.AboutSubject)
 	}
 	if s.Mentions > 0 {
 		out += fmt.Sprintf(", mentions %d", s.Mentions)

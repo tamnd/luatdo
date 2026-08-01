@@ -6,6 +6,9 @@ import (
 	"os"
 
 	"github.com/neo4j/neo4j-go-driver/v5/neo4j"
+
+	"github.com/tamnd/luatdo/law"
+	"github.com/tamnd/luatdo/subject"
 )
 
 // Target is a Bolt connection. Values default from the LUATDO_NEO4J
@@ -68,7 +71,7 @@ func Merge(ctx context.Context, target Target, in Input) error {
 		return nil
 	}
 
-	var docRows, provRows, containsRows, citesRows, amendsRows []map[string]any
+	var docRows, componentRows, versionRows, containsRows, hasVersionRows, citesRows, amendsRows []map[string]any
 	for _, d := range docs {
 		docRows = append(docRows, map[string]any{
 			"id": d.ID, "official_number": d.OfficialNumber, "issuing_body": d.IssuingBody,
@@ -76,17 +79,26 @@ func Merge(ctx context.Context, target Target, in Input) error {
 			"title_en": d.TitleEN, "doc_type": d.DocType, "effective_from": d.EffectiveFrom,
 			"source": d.Source, "source_url": d.SourceURL, "status": d.Status,
 		})
-		for i := range d.Provisions {
-			p := &d.Provisions[i]
-			provRows = append(provRows, map[string]any{
-				"id": p.ID, "kind": p.Kind, "number": p.Number,
-				"heading": p.Heading, "text": p.Text, "position": p.Position,
+		components, versions := law.Split(d)
+		for i := range components {
+			c := &components[i]
+			componentRows = append(componentRows, map[string]any{
+				"id": c.ID, "kind": c.Kind, "number": c.Number,
+				"heading": c.Heading, "position": c.Position, "renumbered_from": c.RenumberedFrom,
 			})
-			parent := p.ParentID
+			parent := c.ParentID
 			if parent == "" {
 				parent = d.ID
 			}
-			containsRows = append(containsRows, map[string]any{"from": parent, "to": p.ID})
+			containsRows = append(containsRows, map[string]any{"from": parent, "to": c.ID})
+		}
+		for i := range versions {
+			v := &versions[i]
+			versionRows = append(versionRows, map[string]any{
+				"id": v.ID, "text": v.Text, "text_hash": v.TextHash,
+				"from_date": v.FromDate, "to_date": v.ToDate,
+			})
+			hasVersionRows = append(hasVersionRows, map[string]any{"from": v.ComponentID, "to": v.ID})
 		}
 	}
 	for _, l := range links {
@@ -106,6 +118,25 @@ func Merge(ctx context.Context, target Target, in Input) error {
 	}
 
 	var termRows, conceptRows, definesRows, mentionsRows []map[string]any
+	var subjectRows, broaderRows, aboutRows []map[string]any
+	if in.Vocabulary != nil {
+		for _, s := range in.Vocabulary.Subjects {
+			subjectRows = append(subjectRows, map[string]any{
+				"id": s.ID, "label_vi": s.LabelVI, "label_en": s.LabelEN, "parent": s.Parent,
+			})
+			if s.Parent != "" {
+				broaderRows = append(broaderRows, map[string]any{"from": s.ID, "to": s.Parent})
+			}
+		}
+	}
+	if err := eachAssignment(in, func(docID string, a *subject.Assignment) error {
+		aboutRows = append(aboutRows, map[string]any{
+			"from": docID, "to": a.SubjectID, "confidence": a.Confidence, "method": a.Method,
+		})
+		return nil
+	}); err != nil {
+		return err
+	}
 	seenTerms := map[string]bool{}
 	for _, d := range in.Definitions {
 		if !seenTerms[d.TermID] {
@@ -173,9 +204,11 @@ func Merge(ctx context.Context, target Target, in Input) error {
 
 	for _, statement := range []string{
 		"CREATE CONSTRAINT doc_id IF NOT EXISTS FOR (d:Document) REQUIRE d.id IS UNIQUE",
-		"CREATE CONSTRAINT prov_id IF NOT EXISTS FOR (p:Provision) REQUIRE p.id IS UNIQUE",
+		"CREATE CONSTRAINT component_id IF NOT EXISTS FOR (c:Component) REQUIRE c.id IS UNIQUE",
+		"CREATE CONSTRAINT version_id IF NOT EXISTS FOR (v:TextVersion) REQUIRE v.id IS UNIQUE",
 		"CREATE CONSTRAINT term_id IF NOT EXISTS FOR (t:Term) REQUIRE t.id IS UNIQUE",
 		"CREATE CONSTRAINT concept_id IF NOT EXISTS FOR (c:LegalConcept) REQUIRE c.id IS UNIQUE",
+		"CREATE CONSTRAINT subject_id IF NOT EXISTS FOR (s:Subject) REQUIRE s.id IS UNIQUE",
 		"CREATE CONSTRAINT norm_id IF NOT EXISTS FOR (n:Norm) REQUIRE n.id IS UNIQUE",
 	} {
 		if _, err := session.ExecuteWrite(ctx, func(tx neo4j.ManagedTransaction) (any, error) {
@@ -191,14 +224,22 @@ func Merge(ctx context.Context, target Target, in Input) error {
 	}
 	steps := []step{
 		{"UNWIND $rows AS r MERGE (d:Document {id: r.id}) SET d += r", docRows},
-		{"UNWIND $rows AS r MERGE (p:Provision {id: r.id}) SET p += r", provRows},
+		// The alias label is set here as well as on the node created by a full
+		// import, so a database built one way and topped up the other way carries
+		// the same labels either way.
+		{"UNWIND $rows AS r MERGE (c:Component {id: r.id}) SET c += r, c:" + law.ProvisionAlias, componentRows},
+		{"UNWIND $rows AS r MERGE (v:TextVersion {id: r.id}) SET v += r", versionRows},
 		{"UNWIND $rows AS r MATCH (a {id: r.from}), (b {id: r.to}) MERGE (a)-[:CONTAINS]->(b)", containsRows},
+		{"UNWIND $rows AS r MATCH (a {id: r.from}), (b {id: r.to}) MERGE (a)-[:HAS_VERSION]->(b)", hasVersionRows},
 		{"UNWIND $rows AS r MATCH (a {id: r.from}), (b {id: r.to}) MERGE (a)-[c:CITES]->(b) SET c.method = r.method, c.snippet = r.snippet", citesRows},
 		{"UNWIND $rows AS r MATCH (a {id: r.from}), (b {id: r.to}) MERGE (a)-[c:AMENDS]->(b) SET c.method = r.method, c.snippet = r.snippet", amendsRows},
 		{"UNWIND $rows AS r MERGE (t:Term {id: r.id}) SET t.text = r.text", termRows},
 		{"UNWIND $rows AS r MERGE (c:LegalConcept {id: r.id}) SET c.label_vi = r.label_vi, c.parent = r.parent", conceptRows},
 		{"UNWIND $rows AS r MATCH (a {id: r.from}), (b {id: r.to}) MERGE (a)-[d:DEFINES]->(b) SET d.connective = r.connective", definesRows},
 		{"UNWIND $rows AS r MATCH (a {id: r.from}), (b {id: r.to}) MERGE (a)-[m:MENTIONS]->(b) SET m.text = r.text, m.class_id = r.class_id, m.score = r.score, m.basis = r.basis", mentionsRows},
+		{"UNWIND $rows AS r MERGE (s:Subject {id: r.id}) SET s += r", subjectRows},
+		{"UNWIND $rows AS r MATCH (a:Subject {id: r.from}), (b:Subject {id: r.to}) MERGE (a)-[:BROADER]->(b)", broaderRows},
+		{"UNWIND $rows AS r MATCH (a {id: r.from}), (b:Subject {id: r.to}) MERGE (a)-[s:ABOUT_SUBJECT]->(b) SET s.confidence = r.confidence, s.method = r.method", aboutRows},
 		{"UNWIND $rows AS r MERGE (n:Norm {id: r.id}) SET n += r", normRows},
 	}
 	// Detail node labels and norm relationship types are static per query, so
