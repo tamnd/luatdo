@@ -103,8 +103,36 @@ func TestProvisionID(t *testing.T) {
 	if got := ProvisionID(want, "clause", "1"); got != want+":clause-1" {
 		t.Errorf("nested ProvisionID = %q", got)
 	}
-	if got := ProvisionID(want, "point", "đ"); got != want+":point-d" {
-		t.Errorf("folded point ProvisionID = %q", got)
+	// Point d and point đ are two different points of the same clause, and one
+	// identifier for both means whichever is parsed last answers for both.
+	if got := ProvisionID(want, "point", "đ"); got != want+":point-dd" {
+		t.Errorf("point đ ProvisionID = %q", got)
+	}
+	if ProvisionID(want, "point", "đ") == ProvisionID(want, "point", "d") {
+		t.Error("point d and point đ share one identifier")
+	}
+}
+
+func TestNumberSegment(t *testing.T) {
+	cases := map[string]string{
+		"94": "94", "15a": "15a", "IV": "iv", " 1 ": "1",
+		"d": "d", "đ": "dd", "Đ": "dd",
+		// The rest of the modified letters are spelled the same way, so a number
+		// that reaches one of them is not a new decision later.
+		"ă": "aw", "â": "aa", "ê": "ee", "ô": "oo", "ơ": "ow", "ư": "uw",
+	}
+	for in, want := range cases {
+		if got := NumberSegment(in); got != want {
+			t.Errorf("NumberSegment(%q) = %q, want %q", in, got, want)
+		}
+	}
+	seen := map[string]string{}
+	for _, letter := range []string{"a", "ă", "â", "d", "đ", "e", "ê", "o", "ô", "ơ", "u", "ư"} {
+		seg := NumberSegment(letter)
+		if other, ok := seen[seg]; ok {
+			t.Errorf("%q and %q both spell %q", other, letter, seg)
+		}
+		seen[seg] = letter
 	}
 }
 
@@ -141,5 +169,38 @@ func TestRomanToArabic(t *testing.T) {
 		if got := RomanToArabic(in); got != want {
 			t.Errorf("RomanToArabic(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+func TestISODate(t *testing.T) {
+	cases := map[string]string{
+		"17/08/2007":   "2007-08-17",
+		" 01/06/2016 ": "2016-06-01",
+		"2007-08-17":   "2007-08-17",
+		// Anything else is a date nobody has, and a guessed one cannot be told
+		// apart later from a date somebody read off the instrument.
+		"1/6/2016":            "",
+		"ngày 17 tháng 8":     "",
+		"":                    "",
+		"2007-08-17T00:00:00": "",
+	}
+	for in, want := range cases {
+		if got := ISODate(in); got != want {
+			t.Errorf("ISODate(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestISODateOrdersTheWayTheCorpusDoesNot(t *testing.T) {
+	// This is the whole reason the function exists. As written, the later date
+	// sorts first, and a version graph built on that ordering applies
+	// amendments backwards while looking finished.
+	early, late := "17/08/2007", "01/06/2016"
+	if early <= late {
+		t.Fatal("the corpus form no longer misorders, so this test is testing nothing")
+	}
+	if ISODate(early) >= ISODate(late) {
+		t.Errorf("ISODate(%q) = %q does not sort before ISODate(%q) = %q",
+			early, ISODate(early), late, ISODate(late))
 	}
 }

@@ -360,6 +360,88 @@ func TestParseChapterHeadingsAfterTheFirstArticle(t *testing.T) {
 
 // "QUY ĐỊNH" alone is also how a decision titles itself, so the kind line is
 // never enough on its own. Without the issuance formula there is no annex.
+// Nghị định số 72/2025/NĐ-CP puts "Mục 2" between article 7 and article 8, and
+// its consolidated text is what showed that the section was being read as the
+// last line of the last point of article 7.
+const sectionedBody = `# Nghị định
+
+**Số hiệu:** 72/2025/NĐ-CP
+
+**Ngày hiệu lực:** 28/03/2025
+
+---
+
+Chương II
+
+CƠ CHẾ ĐIỀU CHỈNH GIÁ
+
+Mục 1
+
+CƠ CHẾ ĐIỀU CHỈNH
+
+Điều 7. Kiểm tra giá bán lẻ điện bình quân
+
+1. Kiểm tra điều chỉnh giá.
+
+Mục 2
+
+THỜI GIAN ĐIỀU CHỈNH GIÁ BÁN LẺ ĐIỆN BÌNH QUÂN
+
+Điều 8. Thời gian điều chỉnh
+
+Giá được xét thay đổi theo Mục 2 nêu trên.
+`
+
+func TestParseSectionAfterAnArticle(t *testing.T) {
+	doc := mustParse(t, Input{OfficialNumber: "72/2025/NĐ-CP", Content: sectionedBody})
+	two := find(doc, doc.ID+":chapter-2:section-2")
+	if two == nil {
+		t.Fatal("the section between article 7 and article 8 was not read as a section")
+	}
+	if two.Heading != "THỜI GIAN ĐIỀU CHỈNH GIÁ BÁN LẺ ĐIỆN BÌNH QUÂN" {
+		t.Errorf("section 2 heading = %q", two.Heading)
+	}
+	eight := find(doc, doc.ID+":article-8")
+	if eight == nil {
+		t.Fatal("article 8 missing")
+	}
+	if eight.ParentID != two.ID {
+		t.Errorf("article 8 hangs off %s, want the section that opened before it", eight.ParentID)
+	}
+	// The article before the section keeps its own text and does not swallow the
+	// section label.
+	clause := find(doc, doc.ID+":article-7:clause-1")
+	if clause == nil || strings.Contains(clause.Text, "Mục 2") {
+		t.Errorf("clause 1 of article 7 carries the section label: %+v", clause)
+	}
+	// A reference to a section inside running text is not a section.
+	last := find(doc, doc.ID+":article-8")
+	if !strings.Contains(last.Text, "theo Mục 2 nêu trên") {
+		t.Errorf("article 8 lost the sentence that mentions a section: %q", last.Text)
+	}
+}
+
+func TestSectionOpens(t *testing.T) {
+	cases := []struct {
+		line      string
+		inArticle bool
+		want      bool
+	}{
+		{"Mục 2", false, true},
+		{"Mục 2", true, true},
+		{"MỤC 2", true, true},
+		{"Mục 2.", true, true},
+		{"Mục 1 NHỮNG QUY ĐỊNH CHUNG", false, true},
+		{"Mục 1 NHỮNG QUY ĐỊNH CHUNG", true, false},
+		{"Điều 7. Kiểm tra", true, false},
+	}
+	for _, c := range cases {
+		if got := sectionOpens(c.line, c.inArticle); got != c.want {
+			t.Errorf("sectionOpens(%q, %v) = %v, want %v", c.line, c.inArticle, got, c.want)
+		}
+	}
+}
+
 func TestParseKindLineWithoutIssuanceIsNotAnAnnex(t *testing.T) {
 	body := "**Số hiệu:** 02/2019/QĐ-UBND\n\n---\n\nSố: 02/2019/QĐ-UBND\n\n" +
 		"Điều 1. Phạm vi\n\nNội dung điều một.\n\n" +
@@ -411,5 +493,111 @@ func TestParseDeterministic(t *testing.T) {
 	}
 	if a.SourceHash != b.SourceHash {
 		t.Error("source hashes differ between runs")
+	}
+}
+
+// This is the shape of every Vietnamese amending law, and the 2007 anti
+// corruption amendment is the case that found it. The instruction quotes the
+// article it enacts, the quotation runs over several lines, and those lines
+// look exactly like structure: "Điều 73." and "1." and "2.". Reading them as
+// structure gives the amending law clauses it does not have, gives two of them
+// the same identifier, and leaves the model reading the instruction only the
+// first line of the text it is supposed to be enacting.
+const quotedBody = `**Số hiệu:** 01/2007/QH12
+
+---
+
+Số: 01/2007/QH12
+
+LUẬT
+
+Điều 1 Sửa đổi, bổ sung một số điều của Luật phòng, chống tham nhũng:
+
+1. Điều 73 được sửa đổi, bổ sung như sau:
+
+"Điều 73. Ban chỉ đạo phòng, chống tham nhũng
+
+1. Ban chỉ đạo trung ương do Thủ tướng Chính phủ đứng đầu.
+
+2. Ban chỉ đạo tỉnh do Chủ tịch Ủy ban nhân dân tỉnh đứng đầu.”
+
+2. Điều 74 được sửa đổi, bổ sung như sau:
+
+"Điều 74. Giám sát công tác phòng, chống tham nhũng
+
+1. Quốc hội giám sát công tác phòng, chống tham nhũng trong phạm vi cả nước."
+
+Điều 2
+
+Luật này có hiệu lực thi hành từ ngày 01 tháng 8 năm 2007.
+`
+
+func TestParseKeepsQuotedTextInsideTheInstruction(t *testing.T) {
+	doc := mustParse(t, Input{OfficialNumber: "01/2007/QH12", Content: quotedBody})
+	base := "vn:law:2007:01-2007-qh12"
+
+	seen := map[string]int{}
+	for i := range doc.Provisions {
+		seen[doc.Provisions[i].ID]++
+	}
+	for id, n := range seen {
+		if n > 1 {
+			t.Errorf("%s was written %d times, so one occurrence answers for both", id, n)
+		}
+	}
+
+	clause1 := find(doc, base+":article-1:clause-1")
+	if clause1 == nil {
+		t.Fatal("the first instruction is missing")
+	}
+	// The whole quoted article is the new text, and the model that reads this
+	// instruction has to see all of it.
+	for _, want := range []string{"Điều 73.", "Thủ tướng Chính phủ", "Chủ tịch Ủy ban nhân dân tỉnh"} {
+		if !strings.Contains(clause1.Text, want) {
+			t.Errorf("the instruction does not carry %q:\n%s", want, clause1.Text)
+		}
+	}
+	if strings.Contains(clause1.Text, "Điều 74") {
+		t.Errorf("the first instruction swallowed the second:\n%s", clause1.Text)
+	}
+	if find(doc, base+":article-73") != nil {
+		t.Error("the quoted article became an article of the amending law")
+	}
+	// Article 2 is outside every quotation and is still this law's own.
+	if find(doc, base+":article-2") == nil {
+		t.Error("the article after the quotations was swallowed")
+	}
+}
+
+func TestParseFallsBackWhenAQuotationNeverCloses(t *testing.T) {
+	body := strings.Replace(quotedBody, `1. Quốc hội giám sát công tác phòng, chống tham nhũng trong phạm vi cả nước."`,
+		"1. Quốc hội giám sát công tác phòng, chống tham nhũng trong phạm vi cả nước.", 1)
+	doc := mustParse(t, Input{OfficialNumber: "01/2007/QH12", Content: body})
+
+	// With the quotation left open the rule would swallow the rest of the
+	// document, so the walk runs again without it and article 2 survives.
+	if find(doc, "vn:law:2007:01-2007-qh12:article-2") == nil {
+		t.Error("an unbalanced quotation swallowed the articles after it")
+	}
+}
+
+func TestQuoteDepth(t *testing.T) {
+	cases := []struct {
+		in   int
+		line string
+		want int
+	}{
+		{0, `"Điều 73. Mở ngoặc`, 1},
+		{1, `nội dung`, 1},
+		{1, `hết.”`, 0},
+		{1, `hết."`, 0},
+		{0, `“mở” và đóng trong một dòng`, 0},
+		// A stray closing mark with nothing open is not a negative depth.
+		{0, `kết thúc”`, 0},
+	}
+	for _, c := range cases {
+		if got := quoteDepth(c.in, c.line); got != c.want {
+			t.Errorf("quoteDepth(%d, %q) = %d, want %d", c.in, c.line, got, c.want)
+		}
 	}
 }

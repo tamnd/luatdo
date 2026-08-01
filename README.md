@@ -96,6 +96,7 @@ RETURN path
 | `luatdo extract` | Schema-constrained LLM extraction of entity mentions under the closed registry |
 | `luatdo link` | Resolve mentions against the registry and the defined term table, with scores |
 | `luatdo norms` | Extract norm statements and verify them with the entailment judge |
+| `luatdo temporal` | Read amending instructions, build the version graph, and answer questions at a date |
 | `luatdo prompt` | Print the exact prompt for a provision without calling a model |
 | `luatdo review` | Work the human review queue for gated statements |
 | `luatdo build` | Assemble verified statements into the trusted store |
@@ -133,8 +134,8 @@ Scope is the part that is easy to get wrong.
 A provincial decision is three articles of housekeeping with the entire substance travelling underneath it as an annex, and a term defined in a `Quy chế` issued under a decision is scoped to the Quy chế rather than to the decision.
 Flattening the two would claim a definition the decision never made, so the annex keeps its own scope and its own article numbering.
 
-Of the 104,674 documents that carry text, 7,207 have a definitions article, and those yield 49,343 definition units under 7,227 scopes, 3,193 of which are annexes.
-Alias declarations are harvested corpus wide rather than only inside definitions articles, because a drafter declares one wherever the phrase first appears: 37,431 of them, split about evenly between `sau đây gọi tắt là`, `sau đây gọi chung là` and `sau đây gọi là`.
+Of the 104,684 documents that carry text, 7,221 have a definitions article, and those yield 49,175 definition units under 7,241 scopes, 3,192 of which are annexes.
+Alias declarations are harvested corpus wide rather than only inside definitions articles, because a drafter declares one wherever the phrase first appears: 37,499 of them, split about evenly between `sau đây gọi tắt là`, `sau đây gọi chung là` and `sau đây gọi là`.
 The 97,467 documents with text and no definitions article are listed by identifier in `<data>/anchor/unanchored.txt`, because a residue described is a residue nobody can check.
 
 ## A term is not a concept
@@ -188,7 +189,7 @@ luatdo concepts score                    # against the gold set
 ## The concepts nobody defined
 
 Everything above starts at a definitions article, and most of the corpus does not have one.
-7,207 documents of the 104,674 that carry text do, so a concept layer built only from anchored definitions knows the vocabulary of seven percent of the corpus and is silent about the rest.
+7,221 documents of the 104,684 that carry text do, so a concept layer built only from anchored definitions knows the vocabulary of seven percent of the corpus and is silent about the rest.
 The phrases the other ninety three percent are made of are concepts too. Nobody wrote a clause saying so.
 
 This is the one pass with no deterministic anchor, and that is not an oversight in the design.
@@ -321,6 +322,57 @@ MATCH (c:Component {id:'vn:law:2019:45-2019-qh14:article-94'})-[:HAS_VERSION]->(
 RETURN v.from_date, v.to_date, v.text ORDER BY v.from_date
 ```
 
+## What changed and when
+
+The section above says a component has wordings.
+This layer says which wording was in force on which day, and which instrument put it there.
+
+An amendment arrives as a sentence in somebody else's document.
+`Sửa đổi, bổ sung Điều 7 như sau:` followed by the whole of the new article 7 is one operation with a target, a kind, a date and the replacement words, and none of those four is a field anybody wrote down.
+So a model reads the sentence into a structured operation, and the reading is checked before it is applied.
+The quote the model gives has to appear in the provision verbatim, and the reference it names has to resolve to a component that exists.
+An operation that fails either check is quarantined with a reason and applied to nothing, because an amendment applied to the wrong component is worse than an amendment not applied at all.
+
+There are ten event kinds and suspend and resume are two of them, because a suspended provision is a third state and reporting it as in force is the mistake this layer exists to prevent.
+Intervals are half open, so the day a successor begins belongs to the successor and no date has two answers.
+An amendment with no date is excluded from every point in time query and never given a guessed one.
+
+Versions are made by aggregation rather than by copying.
+Amending one point makes a new version of that point, of the clause above it and of the article above that, and each of those reuses the version identifiers of every sibling that did not change.
+The replacement text is then parsed by the same walk that parsed the article it replaces, so an amended article still has clauses and points rather than one paragraph of prose, and a component the replacement leaves out is closed rather than left standing.
+
+Nine invariants are checked after every build.
+Eight of them are consistency: no two versions of one component overlap, every version has an event, every event names a document, and so on.
+The ninth is the only one that can prove the layer wrong rather than merely inconsistent.
+Where the state publishes a `văn bản hợp nhất`, a consolidated text of an instrument as it currently reads, the computed text at the consolidation date has to match it.
+
+One chain in the corpus is complete enough to run that check end to end today.
+Nghị định số 72/2025/NĐ-CP was amended by Nghị định số 278/2026/NĐ-CP and consolidated as Văn bản hợp nhất số 68/2026/VBHN-NĐ-BCT.
+Reading the amending decree took 3 model calls over 3 provisions, 3,335 input and 5,811 output tokens, and the cost is unavailable because the route it went to has no rate card.
+That yielded 7 operations, and the build made 510 versions of 485 components across 9 events with nothing quarantined and nothing undated.
+Compared against the published consolidation, 54 components matched on structure and 51 agreed on text, which is 94.4 percent.
+
+The three that disagree are worth stating exactly, because none of them is the version graph being wrong.
+One is a formula that the source of the base decree does not carry and the source of the consolidation does.
+One is `Vộ Tài chính` where the consolidation reads `Bộ Tài chính`, a typo in the base decree as published.
+One is `Tập đoàn điện lực Việt Nam` against `Tập đoàn Điện lực Việt Nam`, which is two publishers capitalising the same proper noun differently.
+The check reports a rate and lists every divergence with both texts rather than asserting a threshold, because a threshold here would turn a number that means something into a boolean that does not.
+
+Of the 100 consolidated texts in the corpus, that one is the only one with an amendment read against it so far, and the report says so on every run rather than letting one instrument look like coverage.
+
+Three questions are answered from the version graph alone, with no text read at query time and a date on every one of them.
+
+```text
+$ luatdo temporal ask 18 vn:law:2025:72-2025-nd-cp:article-7
+vn:law:2025:72-2025-nd-cp:article-7 has 2 versions
+  v1  2025-03-28 to 2026-07-09 in_force     enact        vn:law:2025:72-2025-nd-cp
+  v2  2026-07-09 to now        in_force     amend        vn:law:2026:278-2026-nd-cp
+      Sửa đổi, bổ sung Điều 7 như sau:
+```
+
+Question 16 prints what a component said on two dates and every event between them, and question 17 lists versions that were in force for less than a given number of days before being replaced.
+Question 17 currently returns nothing, which is the honest answer for a graph built from a single amending instrument rather than evidence that no provision in Vietnamese law is short lived.
+
 ## What a document is about
 
 There is a subject vocabulary of 24 domains and 144 subdomains, hand written once against Vietnamese practice and shaped after EuroVoc.
@@ -332,8 +384,8 @@ A document lands in at most three subdomains and carries the domain of each up w
 The design calls for a distilled classifier trained on model labelled seed data, which is the standard way to get a cheap multi-label classifier over a large corpus, and that is not what ships here: this pass is lexical, and the assignments say `lexical` so nobody has to guess later.
 Measured against 65 corpus documents drawn at random and filed by hand, it recalls 0.91, and the six it misses are in the test table rather than relabelled out of it.
 
-Of 112,982 documents that are not quarantined it files 96,368 and leaves 16,614 under nothing, and it uses every domain and every subdomain in the vocabulary.
-The 16,614 are not a failure to route around: a title like `Quyết định về việc bãi bỏ Quyết định số 12/2004/QĐ-UB` says nothing about any subject, and a classifier that guessed one would be inventing navigation.
+Of 112,990 documents that are not quarantined it files 96,371 and leaves 16,619 under nothing, and it uses every domain and every subdomain in the vocabulary.
+The 16,619 are not a failure to route around: a title like `Quyết định về việc bãi bỏ Quyết định số 12/2004/QĐ-UB` says nothing about any subject, and a classifier that guessed one would be inventing navigation.
 They get a stratum of their own in the sample, because the documents nothing could read are the ones worth reading.
 
 `luatdo sample` draws from those assignments, stratified over subject crossed with instrument type.
