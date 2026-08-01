@@ -223,6 +223,7 @@ func cmdExport(args []string) error {
 	in.Definitions, _ = loadDefinitions(s)
 	in.Registry, _ = ontology.Load(s.Ontology())
 	in.Mentions, _ = loadResolutions(s)
+	_ = store.ReadJSON(filepath.Join(s.Trusted(), "statements.json"), &in.Statements)
 	summary := graph.Summarize(in)
 	if *merge {
 		if err := graph.Merge(context.Background(), graph.TargetFromEnv(), in); err != nil {
