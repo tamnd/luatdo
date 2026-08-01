@@ -90,6 +90,7 @@ RETURN path
 | `luatdo sample` | Draw a reproducible sample stratified over subject and instrument type |
 | `luatdo terms` | Extract defined terms from interpretation articles, no model involved |
 | `luatdo concepts` | Read definitions into term uses, cluster them, merge by human decision |
+| `luatdo discover` | Find concepts no article defines, promote them, tag the corpus, link mentions |
 | `luatdo ontology` | Manage the versioned class and predicate registry and its candidates queue |
 | `luatdo extract` | Schema-constrained LLM extraction of entity mentions under the closed registry |
 | `luatdo link` | Resolve mentions against the registry and the defined term table, with scores |
@@ -181,6 +182,63 @@ luatdo concepts queue                    # what is waiting on a person
 luatdo concepts answer -by tamnd <a> <b> same "same definiens, both scoped to the 2019 code"
 luatdo concepts build                    # invariants are a build failure, not a warning
 luatdo concepts score                    # against the gold set
+```
+
+## The concepts nobody defined
+
+Everything above starts at a definitions article, and most of the corpus does not have one.
+7,207 documents of the 104,674 that carry text do, so a concept layer built only from anchored definitions knows the vocabulary of seven percent of the corpus and is silent about the rest.
+The phrases the other ninety three percent are made of are concepts too. Nobody wrote a clause saying so.
+
+This is the one pass with no deterministic anchor, and that is not an oversight in the design.
+A definitions article can be found by grammar because a drafter marked it.
+An undefined concept is a phrase that is load bearing in a provision and looks exactly like a phrase that is not, and the only thing that separates them is reading the sentence.
+So the rule that holds everywhere else, that anything a grammar can get exactly is never asked of a model, is satisfied here by there being nothing exact to get.
+
+The pass reads, aggregates, and only then promotes.
+Reading is per provision and produces candidates with a verbatim span, checked byte for byte at the offsets claimed, the same fence as the definition pass.
+Nothing is promoted off one sighting: a phrase becomes a concept when it appears across enough documents and enough separate instruments, counted apart because forty provisions of one decree are one drafter's habit and four documents from four bodies are a shared vocabulary.
+A phrase that some article does define is refused outright, because that concept already exists and a second one under the same label would be the identity bug this whole layer was built to avoid.
+
+A concept with no definition anywhere still needs something written next to it, so the pass synthesises a working definition out of the usages and marks it as ours.
+It is a set of claims, each of which has to cite a provision that was actually in the evidence, and a claim citing anything else is dropped rather than kept with a warning.
+It is never presented as what the law says. No law says it.
+It goes stale when the usages behind it change, and it says so.
+
+Reading 1.9 million provisions with a model is not affordable, so the model reads a stratified sample and a student learns from what it did.
+The student is an averaged perceptron over string features with no dependencies, which makes it byte identical on Linux, macOS and Windows, and it tags the rest of the corpus.
+It gets scored twice against two different things: agreement with the teacher says it copied the model faithfully, accuracy on the hand annotated gold set says whether either of them was right.
+Whichever set it was trained on is scored on its held out part only, and the model file records what it learned from so this holds when the person running the command has forgotten.
+
+Then mentions get linked back.
+Inside the instrument that defines a term, code decides and no model is called.
+Across instruments code only emits candidates and scores them on signals that are already on disk: the citation graph first, because a document citing another is the strongest evidence in the corpus that it borrowed that vocabulary, then hierarchy, subject overlap and whether the target was in force at all.
+A close call goes to the model with both definitions in view.
+A mention left unresolved is correct output and is recorded as such, while a confidently wrong link is a defect, because a wrong edge in a knowledge graph is worse than a missing one.
+
+The measurement that matters is a standoff against the grammar only layer, run over the real corpus:
+
+```text
+grammar only   23090 terms from 6196 documents
+question 6     concepts nobody defined, used in more than 100 provisions
+  grammar only 0 answers from 23090 concepts considered, and it cannot ever be more:
+               every concept it holds came out of a definitions article
+```
+
+That zero is structural rather than a tuning problem.
+The concepts in the answer to that question are exactly the ones a definitions driven layer never creates, so no threshold makes the number move.
+
+```sh
+luatdo discover sample -n 500 -seed m8   # stratified over instrument type
+luatdo discover prompt <provision-id>    # the exact prompt, no model called
+luatdo discover read                     # the model reads, code checks every quote
+luatdo discover aggregate                # count first, promote second
+luatdo discover define                   # working definitions, marked as ours
+luatdo discover train -source teacher    # or -source gold, which is a smaller thing
+luatdo discover tag                      # the student over the rest of the corpus
+luatdo discover score                    # against the teacher and against the gold set
+luatdo discover link                     # citation graph first, model only for close calls
+luatdo discover compare                  # the standoff against the grammar only layer
 ```
 
 ## An article and what it says
