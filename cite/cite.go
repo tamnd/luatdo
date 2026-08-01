@@ -70,11 +70,47 @@ func Resolve(doc *law.Document, index map[string]string) []Link {
 	return links
 }
 
+// Merge combines the in-text links of one document with its official links.
+//
+// Official metadata wins: where the dataset already states that A amends B,
+// the pattern hit that says the same thing is dropped, so the graph carries
+// one edge with the stronger provenance. A pattern hit the official graph does
+// not cover survives, which is the whole reason both methods exist.
+func Merge(pattern, official []Link) []Link {
+	stated := map[string]bool{}
+	for _, l := range official {
+		stated[l.ToDoc] = true
+	}
+	out := append([]Link(nil), official...)
+	for _, l := range pattern {
+		if l.ToDoc != "" && stated[l.ToDoc] {
+			continue
+		}
+		out = append(out, l)
+	}
+	return out
+}
+
 // Index builds the official number to document ID map used for resolution.
+//
+// A number carried by more than one document resolves to nothing. Across the
+// full corpus that is the ordinary case for a local number: sixty provinces
+// issue their own "01/2024/QĐ-UBND", and text citing that number without naming
+// the province has not said which one it means. Leaving the citation
+// unresolved states that honestly, where picking one province would invent an
+// edge between two documents that have nothing to do with each other.
 func Index(docs []*law.Document) map[string]string {
-	index := map[string]string{}
+	index := make(map[string]string, len(docs))
+	ambiguous := map[string]bool{}
 	for _, d := range docs {
-		index[normalizeNumber(d.OfficialNumber)] = d.ID
+		number := normalizeNumber(d.OfficialNumber)
+		if held, taken := index[number]; taken && held != d.ID {
+			ambiguous[number] = true
+		}
+		index[number] = d.ID
+	}
+	for number := range ambiguous {
+		delete(index, number)
 	}
 	return index
 }

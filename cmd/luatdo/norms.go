@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tamnd/luatdo/campaign"
+	"github.com/tamnd/luatdo/coverage"
 	"github.com/tamnd/luatdo/extract"
 	"github.com/tamnd/luatdo/norm"
 	"github.com/tamnd/luatdo/ontology"
@@ -41,10 +43,6 @@ func cmdNorms(args []string) error {
 	if err != nil {
 		return err
 	}
-	completer, model, err := completerFromEnv()
-	if err != nil {
-		return err
-	}
 	reg, err := ontology.Load(s.Ontology())
 	if err != nil {
 		return err
@@ -53,73 +51,37 @@ func cmdNorms(args []string) error {
 	if err != nil {
 		return err
 	}
-	runner := &extract.NormRunner{
-		Completer: completer, Model: model, Registry: reg,
-		MaxCorrections: *corrections, Mode: *mode, Population: *population,
-	}
-	var provisions []string
-	for i := range doc.Provisions {
-		p := &doc.Provisions[i]
-		if p.ID == target || (strings.HasPrefix(p.ID, target+":") && p.Kind == "clause") {
-			if p.Text != "" {
-				provisions = append(provisions, p.ID)
-			}
+	var tasks []coverage.Task
+	for _, p := range coverage.Extractable(doc) {
+		if p.ID == target || strings.HasPrefix(p.ID, target+":") {
+			tasks = append(tasks, coverage.Task{
+				ProvisionID: p.ID, DocID: doc.ID, DocType: doc.DocType,
+				Priority: coverage.Priority(doc.DocType),
+			})
 		}
 	}
-	if len(provisions) == 0 {
+	if len(tasks) == 0 {
 		return fmt.Errorf("no extractable provisions under %s", target)
 	}
-	for _, provID := range provisions {
-		job, err := runner.Run(context.Background(), doc, provID)
-		if job != nil {
-			if werr := store.WriteJSON(extract.JobPath(s.Norms(), provID), job); werr != nil {
-				return werr
-			}
-			if qerr := enqueueForReview(s, job); qerr != nil {
-				return qerr
-			}
-		}
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "norms %s: %v\n", provID, err)
-			continue
-		}
-		verified, rejected, invalid := 0, 0, 0
-		for _, r := range job.Records {
-			switch r.Status {
-			case "verified":
-				verified++
-			case "rejected":
-				rejected++
-			default:
-				invalid++
-			}
-		}
-		fmt.Printf("norms %s: %d verified, %d rejected, %d invalid, %d tokens\n",
-			provID, verified, rejected, invalid, job.Usage.TotalTokens)
+	eng, err := openEngine()
+	if err != nil {
+		return err
+	}
+	runner := &campaign.Runner{
+		Store: s, Registry: reg, Completer: eng.completer, Pricing: eng.pricing,
+		Model: eng.model, Mode: *mode, Population: *population,
+		MaxCorrections: *corrections, Workers: 1,
+		Report: func(res campaign.Result) { fmt.Println(res) },
+	}
+	summary, err := runner.Run(context.Background(), tasks)
+	if err != nil {
+		return err
+	}
+	fmt.Println(summary)
+	if summary.Failed > 0 {
+		return fmt.Errorf("%d provisions failed", summary.Failed)
 	}
 	return nil
-}
-
-// enqueueForReview routes the job's gated statements into the review queue.
-func enqueueForReview(s *store.Store, job *extract.NormJob) error {
-	now := time.Now().UTC().Format(time.RFC3339)
-	var items []review.Item
-	for i := range job.Records {
-		rec := &job.Records[i]
-		reasons := review.Reasons(rec)
-		if len(reasons) == 0 {
-			continue
-		}
-		items = append(items, review.Item{
-			StatementID: rec.ID,
-			ProvisionID: rec.ProvisionID,
-			DocID:       rec.DocID,
-			Reasons:     reasons,
-			Statement:   rec.Statement,
-			At:          now,
-		})
-	}
-	return review.Enqueue(s.Review(), items)
 }
 
 func cmdReview(args []string) error {

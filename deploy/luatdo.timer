@@ -1,0 +1,14 @@
+[Unit]
+Description=run the luatdo campaign on a schedule
+Documentation=https://github.com/tamnd/luatdo
+
+[Timer]
+OnBootSec=5min
+OnUnitInactiveSec=1h
+AccuracySec=1min
+# A run that was missed while the machine was off starts once it comes back.
+# The queue is recomputed from disk, so a late run is never a wrong run.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

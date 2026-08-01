@@ -148,3 +148,66 @@ func TestSample(t *testing.T) {
 		}
 	}
 }
+
+// enumeratedDoc is the shape that made the window carry its descendants: the
+// clause opens a list and the items are separate provisions, so the clause text
+// alone stops at a colon.
+func enumeratedDoc() *law.Document {
+	const id = "vn:law:2010:46-2010-qh12"
+	return &law.Document{
+		ID:    id,
+		Title: "Luật Ngân hàng Nhà nước Việt Nam",
+		Provisions: []law.Provision{
+			{ID: id + ":article-4", Kind: "article", Number: "4", Heading: "Nhiệm vụ, quyền hạn",
+				Text: "Ngân hàng Nhà nước thực hiện các nhiệm vụ sau đây:"},
+			{ID: id + ":article-4:clause-1", ParentID: id + ":article-4", Kind: "clause", Number: "1",
+				Text: "Thực hiện một hoặc một số nghiệp vụ sau đây:"},
+			{ID: id + ":article-4:clause-1:point-a", ParentID: id + ":article-4:clause-1", Kind: "point", Number: "a",
+				Text: "Nhận tiền gửi;"},
+			{ID: id + ":article-4:clause-1:point-b", ParentID: id + ":article-4:clause-1", Kind: "point", Number: "b",
+				Text: "Cấp tín dụng."},
+		},
+	}
+}
+
+func TestBuildWindowCarriesItsPoints(t *testing.T) {
+	doc := enumeratedDoc()
+	w, err := BuildWindow(doc, doc.ID+":article-4:clause-1")
+	if err != nil {
+		t.Fatalf("BuildWindow: %v", err)
+	}
+	for _, want := range []string{"Thực hiện một hoặc một số nghiệp vụ sau đây:", "a) Nhận tiền gửi;", "b) Cấp tín dụng."} {
+		if !strings.Contains(w.Text, want) {
+			t.Errorf("text misses %q, a quote from a point would fail validation:\n%s", want, w.Text)
+		}
+	}
+	// The article lead-in governs the clause but is not part of it, so it is
+	// there to be read and must stay out of the quotable text.
+	if w.Lead != "Ngân hàng Nhà nước thực hiện các nhiệm vụ sau đây:" {
+		t.Errorf("lead = %q", w.Lead)
+	}
+	if strings.Contains(w.Text, "Ngân hàng Nhà nước thực hiện") {
+		t.Error("the article lead-in must not be quotable from the clause window")
+	}
+	prompt := w.Prompt()
+	if !strings.Contains(prompt, "không được trích dẫn") {
+		t.Error("the prompt must say the lead-in is not quotable")
+	}
+	if strings.Index(prompt, w.Lead) > strings.Index(prompt, w.Text) {
+		t.Error("the lead-in must be read before the clause it governs")
+	}
+}
+
+func TestBuildWindowWithoutALeadIn(t *testing.T) {
+	doc := testDoc()
+	w, err := BuildWindow(doc, "vn:law:2019:45-2019-qh14:article-3:clause-1")
+	if err != nil {
+		t.Fatalf("BuildWindow: %v", err)
+	}
+	if w.Lead != "" {
+		t.Errorf("lead = %q, the article here has a heading and no text", w.Lead)
+	}
+	if strings.Contains(w.Prompt(), "Dẫn nhập") {
+		t.Error("an empty lead-in must not print an empty section")
+	}
+}

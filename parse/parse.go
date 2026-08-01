@@ -17,13 +17,23 @@ import (
 // Input is one raw document with its dataset metadata.
 type Input struct {
 	OfficialNumber string
-	Title          string
-	TitleEN        string
-	DocType        string
-	Content        string
-	Source         string
-	SourceRef      string
-	SourceURL      string
+	// IssuingBody is the authority that signed the document. It is part of the
+	// identity of a document numbered locally, where the number alone repeats
+	// across every province, and it is only a property everywhere else.
+	IssuingBody   string
+	Title         string
+	TitleEN       string
+	DocType       string
+	Content       string
+	Source        string
+	SourceRef     string
+	SourceURL     string
+	EffectiveFrom string
+	// MetadataOnly marks a document whose text has not been downloaded. It
+	// still becomes a node, because the official citation graph points at it
+	// and an edge to a document that is not there is worse than a document
+	// that is honestly marked as text pending.
+	MetadataOnly bool
 }
 
 var (
@@ -48,13 +58,14 @@ var (
 // Parse converts one raw document. It always returns a document; a failed
 // sanity check comes back with Status quarantined and an empty provision tree.
 func Parse(in Input) (*law.Document, error) {
-	id, err := law.DocID(in.OfficialNumber)
+	id, err := law.DocIDIn(in.OfficialNumber, in.IssuingBody)
 	if err != nil {
 		return nil, err
 	}
 	doc := &law.Document{
 		ID:             id,
 		OfficialNumber: in.OfficialNumber,
+		IssuingBody:    in.IssuingBody,
 		Title:          in.Title,
 		TitleEN:        in.TitleEN,
 		DocType:        in.DocType,
@@ -62,7 +73,12 @@ func Parse(in Input) (*law.Document, error) {
 		SourceRef:      in.SourceRef,
 		SourceURL:      in.SourceURL,
 		SourceHash:     store.HashBytes([]byte(in.Content)),
+		EffectiveFrom:  in.EffectiveFrom,
 		Status:         "parsed",
+	}
+	if in.MetadataOnly {
+		doc.Status = "metadata"
+		return doc, nil
 	}
 
 	front, body := splitFrontMatter(in.Content)

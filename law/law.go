@@ -15,6 +15,7 @@ import (
 type Document struct {
 	ID             string      `json:"id"`
 	OfficialNumber string      `json:"official_number"`
+	IssuingBody    string      `json:"issuing_body,omitempty"`
 	Title          string      `json:"title"`
 	TitleEN        string      `json:"title_en,omitempty"`
 	DocType        string      `json:"doc_type"` // constitution, code, law
@@ -60,6 +61,81 @@ func DocID(officialNumber string) (string, error) {
 	}
 	slug := strings.ToLower(m[1] + "-" + m[2] + "-" + asciiFold(m[3]))
 	return "vn:law:" + m[2] + ":" + slug, nil
+}
+
+// DocIDIn builds the stable document identifier of a document issued by a named
+// body. For a number issued centrally the body is ignored and the result is the
+// same as DocID, because "15/2018/NĐ-CP" names one decree of the government and
+// nothing else. For a body relative number it is not: every province issues its
+// own "01/2024/QĐ-UBND", so the identifier carries the issuing body and reads
+// "vn:law:2024:01-2024-qd-ubnd:ubnd-tinh-long-an". Without a body such a number
+// is not an identity at all, and this reports that as an error rather than
+// handing back an identifier that another province also owns.
+func DocIDIn(officialNumber, issuingBody string) (string, error) {
+	id, err := DocID(officialNumber)
+	if err != nil {
+		return "", err
+	}
+	if !BodyRelative(officialNumber) {
+		return id, nil
+	}
+	body := Slug(issuingBody)
+	if body == "" {
+		return "", fmt.Errorf("official number %q is issued under a local number and needs its issuing body", officialNumber)
+	}
+	return id + ":" + body, nil
+}
+
+// localBodies are the issuer abbreviations that name a kind of body rather than
+// one body. Every province, district, and ward has a people's committee and a
+// people's council, so a number ending in one of these repeats across the
+// country. "UB" is the form used before 2005 and "CTUBND" is the chair of a
+// committee acting alone. Abbreviations that merely start the same way, such as
+// UBTVQH for the standing committee of the National Assembly or HĐBT for the
+// former Council of Ministers, name exactly one body and are deliberately not
+// in this list.
+var localBodies = map[string]bool{
+	"UBND":   true,
+	"HDND":   true,
+	"UB":     true,
+	"CTUBND": true,
+	"CTUB":   true,
+}
+
+// BodyRelative reports whether an official number is unique only within the body
+// that issued it. The signal is in the number itself: the suffix of a central
+// instrument names one body ("NĐ-CP", "TT-BTC", "QH14"), while the suffix of a
+// local one names a people's committee or a people's council, of which there are
+// thousands. Reading the number beats reading the scope column of any one
+// dataset, which is free text and dirty in every corpus seen so far.
+func BodyRelative(officialNumber string) bool {
+	suffix := strings.TrimSpace(officialNumber)
+	if i := strings.LastIndex(suffix, "/"); i >= 0 {
+		suffix = suffix[i+1:]
+	}
+	_, issuer, ok := strings.Cut(suffix, "-")
+	if !ok {
+		return false
+	}
+	for part := range strings.SplitSeq(issuer, "-") {
+		if localBodies[bodyAbbrev(part)] {
+			return true
+		}
+	}
+	return false
+}
+
+// bodyAbbrev reduces one issuer token to the letters it opens with, so the
+// council term in "HĐND8" and the stray punctuation in "UBND." do not hide the
+// abbreviation underneath.
+func bodyAbbrev(token string) string {
+	letters := strings.ToUpper(asciiFold(strings.TrimSpace(token)))
+	for i := range len(letters) {
+		if letters[i] < 'A' || letters[i] > 'Z' {
+			return letters[:i]
+		}
+	}
+	return letters
 }
 
 // ProvisionID appends a structural segment to a parent identifier:
