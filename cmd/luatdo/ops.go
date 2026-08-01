@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -47,7 +48,7 @@ func openEngine() (*engine, error) {
 	routes, err := route.Load(path)
 	if err == nil {
 		router := route.New(routes)
-		return &engine{completer: router, model: routes[0].Model, routes: routes, source: path}, nil
+		return &engine{completer: router, model: routes[0].ModelName(), routes: routes, source: path}, nil
 	}
 	if !os.IsNotExist(err) {
 		return nil, err
@@ -59,38 +60,17 @@ func openEngine() (*engine, error) {
 	return &engine{completer: completer, model: model, source: "environment"}, nil
 }
 
-const routesTemplate = `{
-  "routes": [
-    {
-      "name": "subscription",
-      "url": "http://127.0.0.1:8080/v1/responses",
-      "model": "claude-opus-5",
-      "rank": 0,
-      "note": "flat rate endpoint, tried first, no rate card so it reports no cost"
-    },
-    {
-      "name": "metered",
-      "url": "https://api.openai.com/v1/responses",
-      "model": "gpt-5",
-      "rank": 1,
-      "api_key_env": "OPENAI_API_KEY",
-      "pricing": {"input_per_m": 1.25, "cached_input_per_m": 0.125, "output_per_m": 10.0}
-    }
-  ]
-}
-`
-
 func cmdDoctor(args []string) error {
 	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
 	dataDir := fs.String("data", "", "data directory")
-	suggest := fs.Bool("suggest-routes", false, "print a routes file template and exit")
+	suggest := fs.Bool("suggest-routes", false, "ask the endpoints what they serve and print a routes file")
+	write := fs.Bool("write-routes", false, "write the suggested routes file, refusing to overwrite one")
 	skipProbe := fs.Bool("no-probe", false, "check configuration without calling any endpoint")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if *suggest {
-		fmt.Printf("write this to %s\n\n%s", route.DefaultPath(), routesTemplate)
-		return nil
+	if *suggest || *write {
+		return suggestRoutes(*write)
 	}
 
 	s, err := openStore(*dataDir)
@@ -124,7 +104,7 @@ func cmdDoctor(args []string) error {
 		fmt.Printf("  %-14s %s\n", "environment", eng.model)
 	}
 	for _, r := range eng.routes {
-		fmt.Printf("  %-14s %-24s rank %d\n", r.Name, r.Model, r.Rank)
+		fmt.Printf("  %-14s %-24s rank %d\n", r.Name, r.ModelName(), r.Rank)
 	}
 	if *skipProbe {
 		return nil
@@ -138,9 +118,21 @@ func cmdDoctor(args []string) error {
 		if p.Alive {
 			alive++
 			fmt.Printf("  %-14s alive in %s\n", p.Route, p.Latency.Round(time.Millisecond))
-			continue
+		} else {
+			fmt.Printf("  %-14s %s: %s\n", p.Route, p.Cause, p.Error)
 		}
-		fmt.Printf("  %-14s %s: %s\n", p.Route, p.Cause, p.Error)
+		// The plan windows ride along on the response headers and exist
+		// nowhere else, so a probe is the only chance to read them. They are
+		// printed on a failed probe too, because a plan out of quota is
+		// exactly when the numbers matter.
+		if p.Limits != nil {
+			if p.Limits.Primary != nil {
+				fmt.Printf("  %-14s   plan %s, primary %s\n", "", p.Limits.PlanType, p.Limits.Primary)
+			}
+			if p.Limits.Secondary != nil {
+				fmt.Printf("  %-14s   secondary %s\n", "", p.Limits.Secondary)
+			}
+		}
 	}
 
 	target := graph.TargetFromEnv()
@@ -155,6 +147,57 @@ func cmdDoctor(args []string) error {
 		return fmt.Errorf("no route is alive, nothing can run")
 	}
 	fmt.Printf("ready      %d of %d routes alive\n", alive, len(probes))
+	return nil
+}
+
+// suggestRoutes asks the endpoints what they serve and prints the routes file
+// that follows from the answer.
+//
+// It starts from the file already on disk when there is one, so the ranks
+// someone measured survive, and from the starter list when there is not. The
+// free tier catalogue rotates without telling anyone, and a route whose model
+// was withdrawn last week fails in a way that reads like a network problem, so
+// this exists to make the drift visible in one request per endpoint.
+func suggestRoutes(write bool) error {
+	path := route.DefaultPath()
+	routes, err := route.Load(path)
+	source := path
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return err
+		}
+		routes, source = route.Starter(), "the starter list"
+	}
+	fmt.Fprintf(os.Stderr, "probing %d routes from %s\n", len(routes), source)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	catalogues := route.Catalogues(ctx, routes, nil)
+	for _, r := range routes {
+		if models, ok := catalogues[r.Name]; ok {
+			fmt.Fprintf(os.Stderr, "  %-14s serves %d models\n", r.Name, len(models))
+		} else {
+			fmt.Fprintf(os.Stderr, "  %-14s published no catalogue, its configured model is taken on trust\n", r.Name)
+		}
+	}
+	for _, line := range route.Drift(routes, catalogues) {
+		fmt.Fprintf(os.Stderr, "  drift  %s\n", line)
+	}
+
+	suggested := route.Suggest(routes, catalogues)
+	if !write {
+		fmt.Fprintf(os.Stderr, "\nwrite this to %s\n\n", path)
+		raw, err := json.MarshalIndent(route.File{Routes: suggested}, "", "  ")
+		if err != nil {
+			return err
+		}
+		fmt.Printf("%s\n", raw)
+		return nil
+	}
+	if err := route.Write(path, suggested); err != nil {
+		return fmt.Errorf("%w, edit it by hand rather than losing the ranks in it", err)
+	}
+	fmt.Printf("wrote %s with %d routes\n", path, len(suggested))
 	return nil
 }
 
