@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -117,8 +118,12 @@ func TestTokenRefreshesAndKeepsWhatItDoesNotUnderstand(t *testing.T) {
 	if _, err := os.Stat(path + ".bak"); err != nil {
 		t.Error("no backup was kept of the version this process replaced")
 	}
-	if info, err := os.Stat(path); err == nil && info.Mode().Perm() != 0o600 {
-		t.Errorf("mode = %v, a credential must not widen when it is rewritten", info.Mode().Perm())
+	// Windows has no Unix permission bits to keep. It reports 0666 for any file
+	// that is not marked read only, so there is nothing here to assert.
+	if runtime.GOOS != "windows" {
+		if info, err := os.Stat(path); err == nil && info.Mode().Perm() != 0o600 {
+			t.Errorf("mode = %v, a credential must not widen when it is rewritten", info.Mode().Perm())
+		}
 	}
 }
 
