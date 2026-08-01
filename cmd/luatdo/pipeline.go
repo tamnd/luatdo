@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/tamnd/luatdo/anchor"
 	"github.com/tamnd/luatdo/cite"
 	"github.com/tamnd/luatdo/coverage"
 	"github.com/tamnd/luatdo/fetch"
@@ -24,6 +25,7 @@ func init() {
 		command{"fetch", "download a pinned dataset revision into the raw store", cmdFetch},
 		command{"parse", "parse raw documents into the canonical model", cmdParse},
 		command{"cite", "resolve citation and amendment links", cmdCite},
+		command{"anchor", "locate definitions articles and harvest alias declarations", cmdAnchor},
 		command{"export", "project the store into Neo4j", cmdExport},
 		command{"coverage", "report pipeline state recomputed from disk", cmdCoverage},
 	)
@@ -153,6 +155,78 @@ func cmdParse(args []string) error {
 	}
 	fmt.Printf("parse: %d parsed, %d quarantined, %d metadata only, %d without a usable official number\n",
 		parsed, quarantined, metadata, skipped)
+	return nil
+}
+
+func cmdAnchor(args []string) error {
+	fs := flag.NewFlagSet("anchor", flag.ContinueOnError)
+	dataDir := fs.String("data", "", "data directory")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	s, err := openStore(*dataDir)
+	if err != nil {
+		return err
+	}
+
+	only := fs.Arg(0)
+	sum := anchor.NewSummary()
+	if err := eachDoc(s, func(doc *law.Document) error {
+		if only != "" && doc.ID != only && doc.OfficialNumber != only {
+			return nil
+		}
+		r := anchor.Anchor(doc)
+		sum.Add(doc, r)
+		if len(doc.Provisions) == 0 {
+			// A document with no text was never a candidate, so it gets no
+			// artifact. Absence here means the text is missing, not that the
+			// stage skipped it, and the two are told apart in the report.
+			return nil
+		}
+		return store.WriteJSON(filepath.Join(s.Anchor(), law.FileName(doc.ID)), r)
+	}); err != nil {
+		return err
+	}
+
+	if err := store.WriteJSON(filepath.Join(s.Anchor(), anchor.SummaryFile), sum); err != nil {
+		return err
+	}
+	residue := strings.Join(sum.Unanchored, "\n")
+	if residue != "" {
+		residue += "\n"
+	}
+	if err := store.WriteFile(filepath.Join(s.Anchor(), anchor.ResidueFile), []byte(residue)); err != nil {
+		return err
+	}
+	fmt.Println(sum)
+	fmt.Printf("wrote %s\n", filepath.Join(s.Anchor(), anchor.ResidueFile))
+	return nil
+}
+
+// eachDoc streams the parsed documents one at a time. The corpus is 128,094
+// documents with full text, so a stage that walks it holds one document rather
+// than all of them.
+func eachDoc(s *store.Store, visit func(*law.Document) error) error {
+	entries, err := os.ReadDir(s.Docs())
+	if err != nil {
+		return fmt.Errorf("no parsed documents, run luatdo parse first: %w", err)
+	}
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".json") {
+			names = append(names, e.Name())
+		}
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		var doc law.Document
+		if err := store.ReadJSON(filepath.Join(s.Docs(), name), &doc); err != nil {
+			return fmt.Errorf("read %s: %w", name, err)
+		}
+		if err := visit(&doc); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

@@ -7,6 +7,7 @@
 package parse
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 
@@ -53,7 +54,28 @@ var (
 	pointLine     = regexp.MustCompile(`^([a-zđ]{1,2})\)\s+(.*)$`)
 	numberLine    = regexp.MustCompile(`^Số:\s*([0-9]+/[0-9]{4}/[^\s,;]+)`)
 	signatureLine = regexp.MustCompile(`^(TM\.|KT\.|CHỦ TỊCH QUỐC HỘI|CHỦ TỊCH NƯỚC|Nơi nhận:|XÁC THỰC VĂN BẢN)`)
+	// An annex opens with its label alone on a line. "PHỤ LỤC" is unambiguous
+	// on its own, because a reference to an annex in running text continues on
+	// the same line and so never matches.
+	annexLabelLine = regexp.MustCompile(`^(?:PHỤ LỤC|Phụ lục)(?:\s+(?:số\s+)?([IVXLC]+|\d+[A-Za-zĐđ]?))?\s*[:.]?$`)
+	// A sub instrument opens the same way, with its kind alone on a line. It
+	// is not accepted on that alone, because the word also opens the parent
+	// decision's own title block; the issuance formula below is what confirms
+	// it. "QUYẾT ĐỊNH" is deliberately absent: it is the parent's own heading.
+	annexKindLine = regexp.MustCompile(`^(QUY ĐỊNH|QUY CHẾ|QUY TRÌNH|QUY TẮC|ĐIỀU LỆ|NỘI QUY|THỂ LỆ|DANH MỤC|BIỂU MẪU|ĐỀ ÁN|KẾ HOẠCH|CHƯƠNG TRÌNH|PHƯƠNG ÁN|HƯỚNG DẪN)\s*[:.]?$`)
+	// The issuance formula that names the parent instrument. Its presence is
+	// what makes the block above it an annex rather than a title.
+	issuanceLine = regexp.MustCompile(`(?i)^[(（]?\s*(?:ban hành\s+)?kèm theo\b`)
+	// Decorations the sources put between an annex header and its title: rules,
+	// the national heading, and the motto under it.
+	decorationLine = regexp.MustCompile(`^(?:[-_–—=*.\s]+|CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM|Độc lập\s*[-–—]\s*Tự do\s*[-–—]\s*Hạnh phúc)$`)
 )
+
+// annexWindow is how many lines after an annex label the issuance formula may
+// appear. The title of an annex runs to three or four lines and the sources
+// put a rule and the national heading around it, so ten is generous without
+// reaching the annex's own first article.
+const annexWindow = 10
 
 // Parse converts one raw document. It always returns a document; a failed
 // sanity check comes back with Status quarantined and an empty provision tree.
@@ -171,11 +193,18 @@ func equalNumber(a, b string) bool {
 // write into an abandoned backing array.
 type parser struct {
 	provisions []law.Provision
-	chapter    int
-	section    int
-	article    int
-	clause     int
-	point      int
+	// root is what structural identifiers hang off: the document, or the annex
+	// while one is open. An annex restarts its article numbering at one, so
+	// without this the annex's Điều 1 and the parent decision's Điều 1 would
+	// be the same node and one would overwrite the other.
+	root    string
+	annex   int
+	annexes int
+	chapter int
+	section int
+	article int
+	clause  int
+	point   int
 }
 
 func (p *parser) add(prov law.Provision) int {
@@ -189,6 +218,113 @@ func (p *parser) at(i int) *law.Provision {
 		return nil
 	}
 	return &p.provisions[i]
+}
+
+// addHeading attaches a heading line to a chapter or a section. The sources
+// put the number on one line and the title on the next, in capitals, and a
+// title that runs long is broken across several lines, so the lines are joined
+// rather than the first one taken. Anything not in capitals is not a heading.
+func addHeading(h *law.Provision, line string) {
+	if line != strings.ToUpper(line) {
+		return
+	}
+	if h.Heading == "" {
+		h.Heading = line
+		return
+	}
+	h.Heading += " " + line
+}
+
+// annexID is the identifier of the open annex, empty at the top level.
+func (p *parser) annexID() string {
+	if p.annex < 0 {
+		return ""
+	}
+	return p.at(p.annex).ID
+}
+
+// openAnnex tries to read an annex header starting at lines[i]. On success it
+// adds the annex, makes it the root of everything that follows, and returns
+// the index of its last header line. On failure it changes nothing.
+//
+// An annex is numbered by its position rather than by the label it carries,
+// because a document can attach a Quy chế and a Phụ lục I at once and the two
+// labels do not share a numbering sequence. The label is kept verbatim in the
+// heading, which is where a reader looks for it.
+func (p *parser) openAnnex(docID string, lines []string, i int) (int, bool) {
+	label := ""
+	confirmed := false
+	switch {
+	case annexLabelLine.MatchString(lines[i]):
+		label = lines[i]
+		confirmed = true
+	case annexKindLine.MatchString(lines[i]):
+		label = lines[i]
+	default:
+		return i, false
+	}
+
+	var title []string
+	end := i
+	for j := i + 1; j < len(lines) && j <= i+annexWindow; j++ {
+		if issuanceLine.MatchString(lines[j]) {
+			confirmed, end = true, j
+			// The formula runs on for a line or two with the parent's number
+			// and date, and none of it is provision text.
+			for ; end+1 < len(lines) && !endsIssuance(lines[end]); end++ {
+			}
+			break
+		}
+		if isStructural(lines[j]) {
+			break
+		}
+		if !decorationLine.MatchString(lines[j]) {
+			title = append(title, lines[j])
+		}
+	}
+	if !confirmed {
+		return i, false
+	}
+
+	p.annexes++
+	number := fmt.Sprintf("%d", p.annexes)
+	heading := strings.TrimSpace(label + " " + strings.Join(title, " "))
+	p.annex = p.add(law.Provision{
+		ID:      law.ProvisionID(docID, "annex", number),
+		Kind:    "annex",
+		Number:  number,
+		Heading: strings.Join(strings.Fields(heading), " "),
+	})
+	p.root = p.at(p.annex).ID
+	p.chapter, p.section, p.article, p.clause, p.point = -1, -1, -1, -1, -1
+	return end, true
+}
+
+// endsIssuance reports whether the issuance formula closes on this line. The
+// formula opens with a bracket that the sources sometimes leave a line or two
+// before closing.
+func endsIssuance(line string) bool {
+	return strings.HasSuffix(line, ")") || strings.HasSuffix(line, "）")
+}
+
+// isStructural reports whether a line opens a provision, which is where an
+// annex header has to stop.
+func isStructural(line string) bool {
+	return articleLine.MatchString(line) || chapterLine.MatchString(line) ||
+		sectionLine.MatchString(line) || clauseLine.MatchString(line)
+}
+
+// bodyLines returns the body's non-empty lines, trimmed. The walk needs to
+// look ahead from an annex label to the issuance formula that confirms it, so
+// the lines are materialised rather than streamed.
+func bodyLines(body string) []string {
+	var out []string
+	for raw := range strings.SplitSeq(body, "\n") {
+		if line := strings.TrimSpace(raw); line != "" {
+			out = append(out, line)
+		}
+	}
+	return out
 }
 
 func (p *parser) appendText(i int, text string) {
@@ -205,29 +341,44 @@ func (p *parser) appendText(i int, text string) {
 // parseBody walks the body line by line. Chapters and sections group
 // articles, articles hold clauses, clauses hold points. Text between an
 // article heading and its first clause belongs to the article, and text after
-// a point line belongs to that point. The signature block after the final
-// article is not a provision.
+// a point line belongs to that point.
+//
+// The signature block after the final article is not a provision, and it is
+// also not the end of the document. A Vietnamese decision is often a three
+// article instrument whose substance travels underneath it as an annex, so
+// after the signature the walk keeps going and looks only for the next annex
+// header. Everything between the two is discarded, which is what the earlier
+// version did to the annex as well.
 func parseBody(docID, body string) []law.Provision {
-	p := &parser{chapter: -1, section: -1, article: -1, clause: -1, point: -1}
+	p := &parser{root: docID, annex: -1, chapter: -1, section: -1, article: -1, clause: -1, point: -1}
 
-	sawArticle := false
-	for raw := range strings.SplitSeq(body, "\n") {
-		line := strings.TrimSpace(raw)
-		if line == "" {
-			continue
+	lines := bodyLines(body)
+	sawArticle, tail := false, false
+	for i := 0; i < len(lines); i++ {
+		line := lines[i]
+		if sawArticle {
+			if next, ok := p.openAnnex(docID, lines, i); ok {
+				sawArticle, tail = false, false
+				i = next
+				continue
+			}
+			if signatureLine.MatchString(line) {
+				tail = true
+			}
 		}
-		if sawArticle && signatureLine.MatchString(line) {
-			break
+		if tail {
+			continue
 		}
 		switch {
 		case chapterLine.MatchString(line):
 			m := chapterLine.FindStringSubmatch(line)
 			number := law.RomanToArabic(m[1])
 			p.chapter = p.add(law.Provision{
-				ID:      law.ProvisionID(docID, "chapter", number),
-				Kind:    "chapter",
-				Number:  number,
-				Heading: strings.TrimSpace(m[2]),
+				ID:       law.ProvisionID(p.root, "chapter", number),
+				ParentID: p.annexID(),
+				Kind:     "chapter",
+				Number:   number,
+				Heading:  strings.TrimSpace(m[2]),
 			})
 			p.section, p.article, p.clause, p.point = -1, -1, -1, -1
 		case sectionLine.MatchString(line) && p.chapter >= 0 && p.article < 0:
@@ -247,14 +398,14 @@ func parseBody(docID, body string) []law.Provision {
 			if heading == "" {
 				heading = m[3]
 			}
-			parent := docID
+			parent := p.root
 			if p.section >= 0 {
 				parent = p.at(p.section).ID
 			} else if p.chapter >= 0 {
 				parent = p.at(p.chapter).ID
 			}
 			p.article = p.add(law.Provision{
-				ID:       law.ProvisionID(docID, "article", m[1]),
+				ID:       law.ProvisionID(p.root, "article", m[1]),
 				ParentID: parent,
 				Kind:     "article",
 				Number:   m[1],
@@ -287,14 +438,10 @@ func parseBody(docID, body string) []law.Provision {
 			p.appendText(p.clause, line)
 		case p.article >= 0:
 			p.appendText(p.article, line)
-		case p.section >= 0 && !sawArticle:
-			if h := p.at(p.section); h.Heading == "" && line == strings.ToUpper(line) {
-				h.Heading = line
-			}
-		case p.chapter >= 0 && !sawArticle:
-			if h := p.at(p.chapter); h.Heading == "" && line == strings.ToUpper(line) {
-				h.Heading = line
-			}
+		case p.section >= 0 && p.article < 0:
+			addHeading(p.at(p.section), line)
+		case p.chapter >= 0 && p.article < 0:
+			addHeading(p.at(p.chapter), line)
 		}
 	}
 

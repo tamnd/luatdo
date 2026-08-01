@@ -62,6 +62,7 @@ docker run -d --name luatdo-neo4j -p 7474:7474 -p 7687:7687 \
 luatdo fetch uts_vlc
 luatdo parse
 luatdo cite
+luatdo anchor
 luatdo terms
 luatdo ontology init
 luatdo export neo4j
@@ -83,6 +84,7 @@ RETURN path
 | `luatdo fetch` | Download a pinned dataset revision into the immutable raw store |
 | `luatdo parse` | Parse raw documents into the canonical model with stable structural IDs |
 | `luatdo cite` | Resolve citations and amendment links from official metadata and in-text patterns |
+| `luatdo anchor` | Locate definitions articles, split them into units, harvest declared aliases |
 | `luatdo terms` | Extract defined terms from interpretation articles, no model involved |
 | `luatdo ontology` | Manage the versioned class and predicate registry and its candidates queue |
 | `luatdo extract` | Schema-constrained LLM extraction of entity mentions under the closed registry |
@@ -110,6 +112,24 @@ A number issued by a province is not: every province issues its own `01/2024/QĐ
 ```text
 vn:law:2024:01-2024-qd-ubnd:ubnd-tinh-long-an
 ```
+
+## Where definitions live
+
+A Vietnamese law states its vocabulary in one article, usually `Điều 3. Giải thích từ ngữ`, and usually under a sentence saying which instrument that vocabulary belongs to.
+`luatdo anchor` finds those articles, splits them into one unit per clause, and hands the units on with exact spans.
+It decides nothing about what any of them mean.
+
+The line it will not cross is the split between the defined term and its definition.
+That split is the reading, and a substring taken before the connective is a substring rather than a term, so the unit stays whole and the concept pass takes it from there.
+What a grammar can get exactly is taken by code and nothing else is: article headings, clause boundaries, scoping formulas and declared short forms are exact, and the phrase a short form abbreviates is not.
+
+Scope is the part that is easy to get wrong.
+A provincial decision is three articles of housekeeping with the entire substance travelling underneath it as an annex, and a term defined in a `Quy chế` issued under a decision is scoped to the Quy chế rather than to the decision.
+Flattening the two would claim a definition the decision never made, so the annex keeps its own scope and its own article numbering.
+
+Of the 104,674 documents that carry text, 7,207 have a definitions article, and those yield 49,343 definition units under 7,227 scopes, 3,193 of which are annexes.
+Alias declarations are harvested corpus wide rather than only inside definitions articles, because a drafter declares one wherever the phrase first appears: 37,431 of them, split about evenly between `sau đây gọi tắt là`, `sau đây gọi chung là` and `sau đây gọi là`.
+The 97,467 documents with text and no definitions article are listed by identifier in `<data>/anchor/unanchored.txt`, because a residue described is a residue nobody can check.
 
 ## Running a campaign
 
@@ -152,7 +172,7 @@ See [deploy/README.md](deploy/README.md).
 
 Early.
 The milestone plan is tracked in the issues, one issue per milestone.
-M1 is the document and citation graph, M2 adds definitions and entities, M3 adds norms with verification, M4 scales the campaign to the full corpus.
+M1 is the document and citation graph, M2 adds definitions and entities, M3 adds norms with verification, M4 scales the campaign to the full corpus, and M5 onwards build the concept layer on top of it.
 
 ## Development
 
