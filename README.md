@@ -91,6 +91,7 @@ RETURN path
 | `luatdo terms` | Extract defined terms from interpretation articles, no model involved |
 | `luatdo concepts` | Read definitions into term uses, cluster them, merge by human decision |
 | `luatdo discover` | Find concepts no article defines, promote them, tag the corpus, link mentions |
+| `luatdo relations` | Read concept to concept relations, fold them across the corpus, answer with them |
 | `luatdo ontology` | Manage the versioned class and predicate registry and its candidates queue |
 | `luatdo extract` | Schema-constrained LLM extraction of entity mentions under the closed registry |
 | `luatdo link` | Resolve mentions against the registry and the defined term table, with scores |
@@ -239,6 +240,65 @@ luatdo discover tag                      # the student over the rest of the corp
 luatdo discover score                    # against the teacher and against the gold set
 luatdo discover link                     # citation graph first, model only for close calls
 luatdo discover compare                  # the standoff against the grammar only layer
+```
+
+## What holds between two concepts
+
+A layer of concepts with no edges between them is a glossary.
+The thing that makes it a knowledge graph is being able to ask what a building permit requires and get an answer out of the graph rather than out of a search box.
+
+Nothing in this layer can be derived by a deterministic function of the corpus, and that is worth saying plainly because everything else in this project that can be, is.
+Vietnamese legal text has no marker meaning "a prerequisite relation follows".
+The relation is in the meaning of the sentence and nowhere in its form, so this pass is model driven end to end, and the engineering problem is not finding relations without a model but keeping a model's relations honest.
+
+The pass reads one provision at a time and is handed the concepts that provision already links to, which earlier passes found.
+Asking a model to find the concepts and the relations at once is two tasks and it fails at both, so this one is a comprehension task with a bounded candidate set.
+Every edge quotes the provision it came from, checked byte for byte at the offsets claimed, and an edge whose endpoints are nowhere near the text it cites does not build.
+That last check costs a substring search and it kills the commonest relation hallucination outright.
+
+The seed vocabulary is twelve relations, small on purpose, because a vocabulary fixed large up front is a vocabulary the model spends the corpus forcing reality into.
+A model with something to say that none of the twelve covers invents a name for it, and the invented names are folded, defined and only then compared against what already exists.
+The comparison is on definitions and never on names, because `cần có trước` and `là điều kiện để được cấp` are two phrases for one relation, and asking whether two verb phrases mean the same thing in the abstract is a question models are unreliable at.
+No match is a first class answer and usually the right one.
+Nothing invented is promoted without a person, and nothing invented is dropped either, because the tail is where the interesting law is.
+
+There is no `RELATED_TO` in the seed set and none may be promoted into it.
+A model under uncertainty reaches for the vaguest relation available, and an edge saying only that two things are connected cannot be queried for anything.
+A model with nothing specific to say is supposed to return nothing, and an empty answer is the correct output rather than a failure to extract.
+
+Nothing read out of one provision is canonical, whatever confidence the model attached to it.
+One confident sighting is the cheapest hallucination to produce and the hardest to notice, so an edge becomes canonical when at least two provisions in at least two documents say it, counted apart because forty provisions of one decree are one drafter's habit.
+The single exception is the relations the drafter wrote down: a genus or an enumerated subtype out of a definitions clause is a hierarchy edge somebody in the National Assembly typed, and those stand on one provision.
+
+Direction gets its own pass and its own number.
+M4 shipped 75,252 amendment edges pointing the wrong way, which is what happens when the thing that read the sentence is also the thing that checks it.
+So the second pass is blind: it sees the quote and two labels in a fixed order, and it never sees the relation type, the identifiers, or which way the first pass said the arrow runs.
+Direction accuracy is reported next to relation precision and never folded into it, because a graph with 95 percent relation precision and 80 percent direction accuracy is worse than useless for traversal.
+
+Transitivity is a query and never an edge.
+A materialised closure hides which link is weak and lets one bad edge poison a whole subtree without leaving a trace of where it entered.
+A cycle in the hierarchy is reported as the whole path rather than as one offending edge, because it almost always means two concepts should have been merged and naming one edge would send a reviewer to fix the wrong link.
+
+Edge count per concept per document is reported next to everything else.
+The failure it watches for is a graph where every co-occurring pair of concepts acquires an edge, so traversal returns everything and answers nothing.
+It looks fine one edge at a time and shows up only in the ratio.
+
+```sh
+luatdo relations prompt <provision-id>   # the exact prompt, no model called
+luatdo relations extract                 # one file of raw sightings per document
+luatdo relations define                  # fold the invented names, define, canonicalize
+luatdo relations build                   # fold across the corpus, refuse a layer that fails its invariants
+luatdo relations verify                  # the blind direction pass
+luatdo relations ask 21 <concept-id>     # what it requires, from the graph alone
+```
+
+The competency questions run over the edges alone with no text read, because a question that has to fall back on searching the corpus is a question the graph did not answer.
+
+```text
+question 21    what vn:term:...:giay-phep-xay-dung requires, from the graph alone with no text read
+               giấy chứng nhận quyền sử dụng đất (40 provisions in 9 documents, corpus, canonical)
+                 hồ sơ địa chính (4 provisions in 2 documents, corpus, canonical)
+               produced by cấp giấy phép xây dựng (11 provisions in 5 documents, corpus, canonical)
 ```
 
 ## An article and what it says
