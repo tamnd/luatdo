@@ -210,6 +210,23 @@ func probeEngine(ctx context.Context, eng *engine) []route.Probe {
 	return route.Doctor(ctx, eng.routes, route.Clients(eng.routes, nil), nil)
 }
 
+// reportRoutes prints what each route actually did. Every pass that spends
+// money prints it, because a campaign that cannot say which endpoint answered
+// and what it cost is a campaign nobody can budget for.
+func reportRoutes(eng *engine) {
+	if len(eng.routes) == 0 {
+		return
+	}
+	router, ok := eng.completer.(*route.Router)
+	if !ok {
+		return
+	}
+	for _, st := range router.Stats() {
+		fmt.Printf("route %-14s %d calls, %d failures, %d tokens, cost %s\n",
+			st.Route, st.Calls, st.Failures, st.Usage.TotalTokens, st.Cost)
+	}
+}
+
 func cmdRun(args []string) error {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	dataDir := fs.String("data", "", "data directory")
@@ -283,14 +300,7 @@ func cmdRun(args []string) error {
 		return err
 	}
 	fmt.Println(summary)
-	if len(eng.routes) > 0 {
-		if router, ok := eng.completer.(*route.Router); ok {
-			for _, st := range router.Stats() {
-				fmt.Printf("route %-14s %d calls, %d failures, %d tokens, cost %s\n",
-					st.Route, st.Calls, st.Failures, st.Usage.TotalTokens, st.Cost)
-			}
-		}
-	}
+	reportRoutes(eng)
 	stamp := summary.StartedAt.Format("20060102-150405")
 	path := filepath.Join(s.Campaign(), stamp+".json")
 	if err := store.WriteJSON(path, summary); err != nil {
