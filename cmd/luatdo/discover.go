@@ -214,11 +214,11 @@ func discoverRead(s *store.Store, seed string, n, limit int) error {
 	if err != nil {
 		return err
 	}
-	completer, model, err := completerFromEnv()
+	eng, err := openEngine()
 	if err != nil {
 		return fmt.Errorf("the discovery pass needs a model: %w", err)
 	}
-	d := &concept.Discoverer{Completer: completer, Model: model, MaxCorrections: 2}
+	d := &concept.Discoverer{Completer: eng.completer, Model: eng.model, MaxCorrections: 2}
 
 	var usage api.Usage
 	docs, provisions, found, failed, calls := 0, 0, 0, 0, 0
@@ -259,6 +259,7 @@ func discoverRead(s *store.Store, seed string, n, limit int) error {
 	fmt.Printf("read %d documents, %d provisions, %d candidate concepts, %d provisions the model could not get right, %d calls\n",
 		docs, provisions, found, failed, calls)
 	fmt.Printf("usage %d input, %d output, %d total tokens\n", usage.InputTokens, usage.OutputTokens, usage.TotalTokens)
+	reportRoutes(eng)
 	return err
 }
 
@@ -351,11 +352,11 @@ func discoverDefine(s *store.Store, limit int) error {
 	if len(promotions) == 0 {
 		return fmt.Errorf("nothing promoted, run luatdo discover aggregate first")
 	}
-	completer, model, err := completerFromEnv()
+	eng, err := openEngine()
 	if err != nil {
 		return fmt.Errorf("writing working definitions needs a model: %w", err)
 	}
-	definer := &concept.Definer{Completer: completer, Model: model, MaxCorrections: 2}
+	definer := &concept.Definer{Completer: eng.completer, Model: eng.model, MaxCorrections: 2}
 
 	terms := concept.PromoteToTermUses(promotions, aggs)
 	byKey := map[string]*concept.Aggregation{}
@@ -417,6 +418,7 @@ func discoverDefine(s *store.Store, limit int) error {
 	fmt.Printf("%d working definitions written, %d concepts the provisions did not settle\n", written, declined)
 	fmt.Println("none of these is a statutory definition and none of them is evidence for a norm")
 	fmt.Printf("usage %d input, %d output, %d total tokens\n", usage.InputTokens, usage.OutputTokens, usage.TotalTokens)
+	reportRoutes(eng)
 	return nil
 }
 

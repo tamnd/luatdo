@@ -186,7 +186,7 @@ func cmdOntology(args []string) error {
 }
 
 func runBootstrap(s *store.Store, sampleSize int) error {
-	completer, model, err := completerFromEnv()
+	eng, err := openEngine()
 	if err != nil {
 		return err
 	}
@@ -198,7 +198,7 @@ func runBootstrap(s *store.Store, sampleSize int) error {
 	var usage api.Usage
 	found := 0
 	for i, item := range sampled {
-		cs, u, err := extract.Bootstrap(context.Background(), completer, model, item.Doc, item.ProvisionID)
+		cs, u, err := extract.Bootstrap(context.Background(), eng.completer, eng.model, item.Doc, item.ProvisionID)
 		usage = addUsage(usage, u)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "bootstrap %s: %v\n", item.ProvisionID, err)
@@ -211,6 +211,7 @@ func runBootstrap(s *store.Store, sampleSize int) error {
 		fmt.Printf("bootstrap %d/%d %s: %d candidates\n", i+1, len(sampled), item.ProvisionID, len(cs))
 	}
 	fmt.Printf("bootstrap: %d candidates from %d provisions, %d tokens\n", found, len(sampled), usage.TotalTokens)
+	reportRoutes(eng)
 	return nil
 }
 
@@ -294,7 +295,7 @@ func cmdExtract(args []string) error {
 	if err != nil {
 		return err
 	}
-	completer, model, err := completerFromEnv()
+	eng, err := openEngine()
 	if err != nil {
 		return err
 	}
@@ -306,7 +307,7 @@ func cmdExtract(args []string) error {
 	if err != nil {
 		return err
 	}
-	e := &extract.Extractor{Completer: completer, Model: model, Registry: reg, MaxCorrections: *corrections}
+	e := &extract.Extractor{Completer: eng.completer, Model: eng.model, Registry: reg, MaxCorrections: *corrections}
 
 	var provisions []string
 	for i := range doc.Provisions {
@@ -334,6 +335,7 @@ func cmdExtract(args []string) error {
 		fmt.Printf("extract %s: %d mentions, %d unresolved, %d tokens\n",
 			provID, len(job.Mentions), len(job.Unresolved), job.Usage.TotalTokens)
 	}
+	reportRoutes(eng)
 	return nil
 }
 

@@ -252,11 +252,11 @@ func conceptPrompt(s *store.Store, unitID string) error {
 }
 
 func conceptRead(s *store.Store, only string, limit int) error {
-	completer, model, err := completerFromEnv()
+	eng, err := openEngine()
 	if err != nil {
 		return fmt.Errorf("the reading pass needs a model: %w", err)
 	}
-	reader := &concept.Reader{Completer: completer, Model: model, MaxCorrections: 2}
+	reader := &concept.Reader{Completer: eng.completer, Model: eng.model, MaxCorrections: 2}
 
 	var usage api.Usage
 	units, read, failed, calls := 0, 0, 0, 0
@@ -293,6 +293,7 @@ func conceptRead(s *store.Store, only string, limit int) error {
 	fmt.Printf("read %d units, %d term uses, %d units the model could not get right, %d calls\n",
 		units, read, failed, calls)
 	fmt.Printf("usage %d input, %d output, %d total tokens\n", usage.InputTokens, usage.OutputTokens, usage.TotalTokens)
+	reportRoutes(eng)
 	return err
 }
 
@@ -332,12 +333,13 @@ func conceptCluster(s *store.Store, compare bool) error {
 	}
 
 	var comparer *concept.Comparer
+	var eng *engine
 	if compare {
-		completer, model, err := completerFromEnv()
+		eng, err = openEngine()
 		if err != nil {
 			return fmt.Errorf("comparing needs a model: %w", err)
 		}
-		comparer = &concept.Comparer{Completer: completer, Model: model, MaxCorrections: 2}
+		comparer = &concept.Comparer{Completer: eng.completer, Model: eng.model, MaxCorrections: 2}
 	}
 
 	now := concept.Now(time.Now())
@@ -369,6 +371,7 @@ func conceptCluster(s *store.Store, compare bool) error {
 		len(terms), len(links), len(clusters), len(questions))
 	if comparer != nil {
 		fmt.Printf("usage %d input, %d output, %d total tokens\n", usage.InputTokens, usage.OutputTokens, usage.TotalTokens)
+		reportRoutes(eng)
 	}
 	fmt.Println("nothing is merged until somebody answers, run luatdo concepts queue")
 	return nil
