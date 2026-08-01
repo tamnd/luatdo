@@ -33,7 +33,8 @@ func cmdConcepts(args []string) error {
 	limit := fs.Int("limit", 0, "stop after this many units, 0 for all")
 	compare := fs.Bool("compare", false, "ask the model to compare each queued pair")
 	who := fs.String("by", "", "who is deciding, recorded on the edge")
-	if err := fs.Parse(args); err != nil {
+	sub, rest, err := parseSub(fs, args)
+	if err != nil {
 		return err
 	}
 	s, err := openStore(*dataDir)
@@ -41,19 +42,19 @@ func cmdConcepts(args []string) error {
 		return err
 	}
 
-	switch fs.Arg(0) {
+	switch sub {
 	case "sample":
 		return conceptSample(s, *n, *seed)
 	case "prompt":
-		return conceptPrompt(s, fs.Arg(1))
+		return conceptPrompt(s, arg(rest, 0))
 	case "read":
-		return conceptRead(s, fs.Arg(1), *limit)
+		return conceptRead(s, arg(rest, 0), *limit)
 	case "cluster":
 		return conceptCluster(s, *compare)
 	case "queue":
 		return conceptQueue(s)
 	case "answer":
-		return conceptAnswer(s, *who, fs.Args()[1:])
+		return conceptAnswer(s, *who, rest)
 	case "build":
 		return conceptBuild(s)
 	case "score":
@@ -501,7 +502,14 @@ func loadJobs(s *store.Store) ([]concept.Job, error) {
 	}
 	var out []concept.Job
 	for _, e := range entries {
-		if !strings.HasSuffix(e.Name(), ".json") || e.Name() == "layer.json" {
+		// One directory holds the reading jobs, the discovery sightings, the
+		// mention reports and the built layer, and only the reading jobs are
+		// jobs. The prefixes are how they are told apart, and a file that is
+		// not a job read as one would silently unmarshal into an empty job.
+		if !strings.HasSuffix(e.Name(), ".json") || e.Name() == concept.LayerFile ||
+			strings.HasPrefix(e.Name(), concept.SightingPrefix) ||
+			strings.HasPrefix(e.Name(), concept.MentionPrefix) ||
+			e.Name() == concept.TaggerFile || e.Name() == concept.DiscoverySummary {
 			continue
 		}
 		var jobs []concept.Job

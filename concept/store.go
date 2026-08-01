@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 
 	"github.com/tamnd/luatdo/law"
 )
@@ -25,6 +27,17 @@ const (
 	// answers and is rewritten whole every build, so it is the one file here
 	// that is safe to lose.
 	LayerFile = "layer.json"
+	// The discovery pass keeps its own files. Sightings live one file per
+	// document beside the reading jobs, under a prefix, because a document has
+	// both and one directory listing has to be able to tell them apart.
+	SightingPrefix   = "sight_"
+	AggregateFile    = "aggregate.jsonl"
+	PromotionFile    = "promotions.jsonl"
+	WorkingFile      = "working.jsonl"
+	MentionPrefix    = "mentions_"
+	TaggerFile       = "tagger.json"
+	TeacherFile      = "teacher.jsonl"
+	DiscoverySummary = "discovery.json"
 )
 
 // ReadLayer loads a built layer. A store where the build has never run is not
@@ -220,4 +233,164 @@ func readJSONL[T any](path string) ([]T, error) {
 		out = append(out, row)
 	}
 	return out, scanner.Err()
+}
+
+// SightingPath is where one document's discovery output lives.
+func SightingPath(dir, docID string) string {
+	return filepath.Join(dir, SightingPrefix+law.FileName(docID))
+}
+
+// WriteSightings stores one document's discovery run.
+func WriteSightings(dir string, ss []Sighting) error {
+	if len(ss) == 0 {
+		return nil
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	return writeJSON(SightingPath(dir, ss[0].DocID), ss)
+}
+
+// ReadSightings returns one document's discovery output, or nil when the
+// document has not been read for concepts.
+func ReadSightings(dir, docID string) ([]Sighting, error) {
+	data, err := os.ReadFile(SightingPath(dir, docID))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var ss []Sighting
+	if err := json.Unmarshal(data, &ss); err != nil {
+		return nil, err
+	}
+	return ss, nil
+}
+
+// EachSighting streams every stored sighting file. The corpus has more
+// documents than fit in memory at once, and the aggregation only needs the
+// candidates, so the files go past one at a time.
+func EachSighting(dir string, visit func([]Sighting) error) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	var names []string
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), SightingPrefix) {
+			names = append(names, e.Name())
+		}
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		data, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			return err
+		}
+		var ss []Sighting
+		if err := json.Unmarshal(data, &ss); err != nil {
+			return fmt.Errorf("read %s: %w", name, err)
+		}
+		if err := visit(ss); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// WriteAggregations replaces the aggregation file. Like the clusters it is
+// derived and rebuilt whole, so nothing is lost by rewriting it.
+func WriteAggregations(dir string, aggs []Aggregation) error {
+	return replaceJSONL(dir, AggregateFile, aggs)
+}
+
+// ReadAggregations returns the aggregation output.
+func ReadAggregations(dir string) ([]Aggregation, error) {
+	return readJSONL[Aggregation](filepath.Join(dir, AggregateFile))
+}
+
+// WritePromotions replaces the promotion file.
+func WritePromotions(dir string, ps []Promotion) error {
+	return replaceJSONL(dir, PromotionFile, ps)
+}
+
+// ReadPromotions returns what was promoted.
+func ReadPromotions(dir string) ([]Promotion, error) {
+	return readJSONL[Promotion](filepath.Join(dir, PromotionFile))
+}
+
+// WriteWorkingDefinitions replaces the working definition file. It is rewritten
+// rather than appended because a working definition is regenerated when its
+// sources change, and keeping the superseded one would leave two readings of
+// one concept in the store with nothing to say which is current.
+func WriteWorkingDefinitions(dir string, ws []WorkingDefinition) error {
+	return replaceJSONL(dir, WorkingFile, ws)
+}
+
+// ReadWorkingDefinitions returns the working definitions.
+func ReadWorkingDefinitions(dir string) ([]WorkingDefinition, error) {
+	return readJSONL[WorkingDefinition](filepath.Join(dir, WorkingFile))
+}
+
+// WriteMentions stores one document's mention report.
+func WriteMentions(dir string, r *MentionReport) error {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	return writeJSON(filepath.Join(dir, MentionPrefix+law.FileName(r.DocID)), r)
+}
+
+// ReadMentions returns one document's mention report, or nil.
+func ReadMentions(dir, docID string) (*MentionReport, error) {
+	data, err := os.ReadFile(filepath.Join(dir, MentionPrefix+law.FileName(docID)))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var r MentionReport
+	if err := json.Unmarshal(data, &r); err != nil {
+		return nil, err
+	}
+	return &r, nil
+}
+
+// replaceJSONL writes rows to a file atomically, removing it when there are no
+// rows so that an empty derived file never sits on disk pretending to be a
+// result somebody computed.
+func replaceJSONL[T any](dir, name string, rows []T) error {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	path := filepath.Join(dir, name)
+	if len(rows) == 0 {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	}
+	f, err := os.CreateTemp(dir, "."+name+".tmp*")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	defer func() {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+	}()
+	enc := json.NewEncoder(f)
+	for _, r := range rows {
+		if err := enc.Encode(r); err != nil {
+			return err
+		}
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
