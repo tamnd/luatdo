@@ -1,0 +1,21 @@
+version: 2
+
+project_name: luatdo
+
+builds:
+  - main: ./cmd/luatdo
+    env: [CGO_ENABLED=0]
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+
+archives:
+  - formats: [tar.gz]
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  use: github
