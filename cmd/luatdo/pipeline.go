@@ -11,6 +11,7 @@ import (
 
 	"github.com/tamnd/luatdo/anchor"
 	"github.com/tamnd/luatdo/cite"
+	"github.com/tamnd/luatdo/concept"
 	"github.com/tamnd/luatdo/coverage"
 	"github.com/tamnd/luatdo/fetch"
 	"github.com/tamnd/luatdo/graph"
@@ -374,6 +375,7 @@ func cmdExport(args []string) error {
 		in.Vocabulary, _ = subject.Load()
 	}
 	_ = store.ReadJSON(filepath.Join(s.Trusted(), "statements.json"), &in.Statements)
+	in.Layer, _ = concept.ReadLayer(s.Concepts())
 	summary := graph.Summarize(in)
 	if *check {
 		counts, err := graph.Live(context.Background(), graph.TargetFromEnv())

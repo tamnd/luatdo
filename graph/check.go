@@ -37,6 +37,14 @@ var counters = []struct {
 	{"defines", "MATCH ()-[r:DEFINES]->() RETURN count(r) AS n", func(s Summary) int { return s.Defines }},
 	{"mentions", "MATCH ()-[r:MENTIONS]->() RETURN count(r) AS n", func(s Summary) int { return s.Mentions }},
 	{"about_subject", "MATCH ()-[r:ABOUT_SUBJECT]->() RETURN count(r) AS n", func(s Summary) int { return s.AboutSubject }},
+	{"term_uses", "MATCH (t:TermUse) RETURN count(t) AS n", func(s Summary) int { return s.TermUses }},
+	{"merged_concepts", "MATCH (c:Concept) RETURN count(c) AS n", func(s Summary) int { return s.MergedConcepts }},
+	{"instance_of", "MATCH ()-[r:INSTANCE_OF]->() RETURN count(r) AS n", func(s Summary) int { return s.InstanceOf }},
+	// A difference is asymmetric in the graph and symmetric in life. The store
+	// records it once, in the order the reviewer was asked, so the database is
+	// expected to hold exactly one edge per decision rather than a pair.
+	{"differs_from", "MATCH ()-[r:DIFFERS_FROM]->() RETURN count(r) AS n", func(s Summary) int { return s.DiffersFrom }},
+	{"term_use_edges", "MATCH ()-[r:DEFINES_TERM|IN_SCOPE|REFERS_TO]->() RETURN count(r) AS n", func(s Summary) int { return s.TermUseEdges }},
 }
 
 // Live counts what the database currently holds.

@@ -89,6 +89,7 @@ RETURN path
 | `luatdo subjects` | File every document under the subject vocabulary, no model involved |
 | `luatdo sample` | Draw a reproducible sample stratified over subject and instrument type |
 | `luatdo terms` | Extract defined terms from interpretation articles, no model involved |
+| `luatdo concepts` | Read definitions into term uses, cluster them, merge by human decision |
 | `luatdo ontology` | Manage the versioned class and predicate registry and its candidates queue |
 | `luatdo extract` | Schema-constrained LLM extraction of entity mentions under the closed registry |
 | `luatdo link` | Resolve mentions against the registry and the defined term table, with scores |
@@ -133,6 +134,54 @@ Flattening the two would claim a definition the decision never made, so the anne
 Of the 104,674 documents that carry text, 7,207 have a definitions article, and those yield 49,343 definition units under 7,227 scopes, 3,193 of which are annexes.
 Alias declarations are harvested corpus wide rather than only inside definitions articles, because a drafter declares one wherever the phrase first appears: 37,431 of them, split about evenly between `sau đây gọi tắt là`, `sau đây gọi chung là` and `sau đây gọi là`.
 The 97,467 documents with text and no definitions article are listed by identifier in `<data>/anchor/unanchored.txt`, because a residue described is a residue nobody can check.
+
+## A term is not a concept
+
+The phrase `người lao động` appears in the Labour Code, in the Social Insurance Law and in several hundred provincial decisions, and they do not all mean the same thing by it.
+So the concept layer has two node types and the difference between them is the whole design.
+A `TermUse` is a term as one instrument defines and uses it, its identity is the scope plus the term, and it is the only thing a reading pass is allowed to create.
+A `Concept` is corpus wide and comes into existence only because a person decided that two term uses are the same thing and wrote down why.
+
+```text
+vn:term:vn:law:2019:45-2019-qh14:nguoi-lao-dong
+vn:concept:nguoi-lao-dong
+```
+
+The merge is three steps and each is done by whoever is good at it.
+Code proposes: same slug, shared aliases, overlapping genus, clustered star wise around the lexicographically first member so k readings cost k-1 questions instead of k squared.
+A model compares the two definitions and says what it thinks, as advice, recorded on the question.
+A person answers `same`, `broader`, `narrower`, `differs` or `defer`, and the answer is refused without a written rationale.
+`INSTANCE_OF` carries the decider, the timestamp and the reason, so a merge made a year ago can be argued with.
+
+`DIFFERS_FROM` is a first class edge, not an error state.
+Two instruments using one phrase for two things is one of the most useful facts this graph can hold, and a pipeline that merges by string match destroys it silently.
+A difference carries the specific differentiae the two readings disagree on, because a difference with no stated basis is an opinion.
+
+The reading itself is genus and differentiae, kind, aliases, and three things that are usually got wrong.
+A term naming a position rather than an organisation is asked as a direct question while the clause is in view, never inferred from the label afterwards, because `cơ quan có thẩm quyền` resolves per document and never to one ministry.
+A definition that points at another instrument is stored as a pointer with the quote that makes it one, and the definition field stays empty, because paraphrasing a document nobody was shown is an unfalsifiable claim.
+A definition that lists its subtypes keeps the list, because that is the definition.
+Every quote is checked byte for byte at the offsets it claims, and a reading that fails is rejected rather than logged.
+
+The kind enum is closed and it started at eight.
+Annotating two hundred real definition clauses by hand, before running anything over them, showed that most of the corpus does not define subjects and acts.
+It defines chemicals, cables, vehicles, software, forests and water, it defines periods and deadlines, and it defines standards and methods, so `thing`, `time` and `rule` were added and `other` was added with them.
+`other` is a residual and its share is a measurement: it is 5 percent of the gold set, and if it grows the enum is wrong again.
+
+The gold set is 200 clauses drawn by seed and stratified over document type, annotated by hand before the pipeline existed to have an opinion about them.
+That order is the point, since an annotation written next to a prediction measures agreement with the prediction rather than accuracy.
+They yield 198 defined terms, 5 clauses that define nothing at all, 26 role terms, 2 definitions by reference, 15 enumerations, and 8 hand decided merge pairs of which 4 are differences.
+The gold set is itself checked before it is used to score anything, because a typo in a kind name there would score every correct reading as wrong and make the pipeline look broken instead of the ruler.
+
+```sh
+luatdo concepts sample -n 200 -seed m7   # draw, then annotate by hand
+luatdo concepts read                     # the model reads, code checks every quote
+luatdo concepts cluster --compare        # code proposes, the model advises
+luatdo concepts queue                    # what is waiting on a person
+luatdo concepts answer -by tamnd <a> <b> same "same definiens, both scoped to the 2019 code"
+luatdo concepts build                    # invariants are a build failure, not a warning
+luatdo concepts score                    # against the gold set
+```
 
 ## An article and what it says
 

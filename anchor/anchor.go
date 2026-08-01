@@ -159,6 +159,11 @@ type index struct {
 	// annexOf maps a provision identifier to the annex that contains it, empty
 	// for the provisions of the parent instrument.
 	annexOf map[string]string
+	// used counts the unit identifiers already handed out for this document. It
+	// spans the document rather than the article because a document can carry
+	// two articles numbered the same, and then their clauses collide across
+	// articles as well as within one.
+	used map[string]int
 }
 
 func newIndex(doc *law.Document) *index {
@@ -167,6 +172,7 @@ func newIndex(doc *law.Document) *index {
 		byID:       make(map[string]int, len(doc.Provisions)),
 		children:   map[string][]int{},
 		annexOf:    map[string]string{},
+		used:       map[string]int{},
 	}
 	for i := range doc.Provisions {
 		p := &doc.Provisions[i]
@@ -263,6 +269,18 @@ func (ix *index) anchorArticle(doc *law.Document, article int) (Scope, []Unit) {
 // was never divided into clauses is one unit of its own, because a short
 // definitions article is sometimes written as a single run of sentences and
 // dropping it would lose every term in it.
+//
+// A clause identifier can repeat. An amending instrument writes the replacement
+// text inside quotation marks and that text carries its own numbering, so an
+// article that says "sua doi, bo sung Dieu 11 nhu sau" is followed by a clause
+// 1, a clause 2 and a clause 3 that belong to the article being amended rather
+// than to this one. A document can also carry two articles numbered the same,
+// one in the body and one in an annex the parse did not separate, and then the
+// repeat spans articles. Around one document in two hundred does one or the
+// other. The unit identifier is the key everything downstream joins on, so a
+// repeat is not cosmetic: an annotation of one clause would be scored against a
+// reading of another and both numbers would be wrong quietly. Repeats get a
+// suffix naming which occurrence they are.
 func (ix *index) split(doc *law.Document, article *law.Provision, scope Scope) []Unit {
 	var units []Unit
 	for _, i := range ix.children[article.ID] {
@@ -271,7 +289,7 @@ func (ix *index) split(doc *law.Document, article *law.Provision, scope Scope) [
 			continue
 		}
 		units = append(units, Unit{
-			ID:        c.ID,
+			ID:        ix.uniqueID(c.ID),
 			DocID:     doc.ID,
 			ScopeID:   scope.ID,
 			ArticleID: article.ID,
@@ -282,7 +300,7 @@ func (ix *index) split(doc *law.Document, article *law.Provision, scope Scope) [
 	}
 	if len(units) == 0 && strings.TrimSpace(article.Text) != "" {
 		units = append(units, Unit{
-			ID:        article.ID,
+			ID:        ix.uniqueID(article.ID),
 			DocID:     doc.ID,
 			ScopeID:   scope.ID,
 			ArticleID: article.ID,
@@ -292,6 +310,25 @@ func (ix *index) split(doc *law.Document, article *law.Provision, scope Scope) [
 		})
 	}
 	return units
+}
+
+// uniqueID hands out an identifier no unit of this document has taken. The
+// first holder of an identifier keeps it unchanged, so a document with no
+// repeats is projected exactly as it was before this existed. The suffix is
+// checked too, since a document that repeats a clause three times would
+// otherwise mint the same tilde-two twice.
+func (ix *index) uniqueID(id string) string {
+	ix.used[id]++
+	if ix.used[id] == 1 {
+		return id
+	}
+	for n := ix.used[id]; ; n++ {
+		candidate := fmt.Sprintf("%s~%d", id, n)
+		if ix.used[candidate] == 0 {
+			ix.used[candidate]++
+			return candidate
+		}
+	}
 }
 
 // Aliases harvests every alias declaration in a document, in provision order.

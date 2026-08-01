@@ -175,6 +175,79 @@ func TestAnchorTreatsAnUndividedArticleAsOneUnit(t *testing.T) {
 	}
 }
 
+// An amending article quotes the text it replaces, and the quoted text carries
+// its own clause numbers, so the parser hands back the same clause identifier
+// more than once. The identifier is what the gold set, the readings and the
+// term uses all join on, so two clauses sharing one would mean an annotation of
+// the first scored against a reading of the third. This was found by drawing a
+// sample for annotation and hitting the same identifier three times.
+func TestTwoClausesNumberedTheSameGetDifferentIdentifiers(t *testing.T) {
+	const id = "vn:law:2026:243-2026-nd-cp"
+	doc := &law.Document{ID: id, Status: "parsed", Provisions: []law.Provision{
+		{ID: id + ":article-2", Kind: "article", Number: "2", Heading: "Giải thích từ ngữ",
+			Text: "Trong Nghị định này, các từ ngữ dưới đây được hiểu như sau:"},
+		{ID: id + ":article-2:clause-5", ParentID: id + ":article-2", Kind: "clause", Number: "5",
+			Text: "Sửa đổi, bổ sung Điều 11 như sau:", TextHash: "hash-a"},
+		{ID: id + ":article-2:clause-5", ParentID: id + ":article-2", Kind: "clause", Number: "5",
+			Text: "Sản lượng điện dư là sản lượng điện được sản xuất từ nguồn năng lượng tái tạo.", TextHash: "hash-b"},
+		{ID: id + ":article-2:clause-5", ParentID: id + ":article-2", Kind: "clause", Number: "5",
+			Text: "Yêu cầu vận hành đối với nguồn điện tự sản xuất, tự tiêu thụ:", TextHash: "hash-c"},
+	}}
+	r := Anchor(doc)
+	if len(r.Units) != 3 {
+		t.Fatalf("units = %d, want 3", len(r.Units))
+	}
+	seen := map[string]bool{}
+	for _, u := range r.Units {
+		if seen[u.ID] {
+			t.Errorf("unit id %s appears twice", u.ID)
+		}
+		seen[u.ID] = true
+	}
+	// The first occurrence keeps the identifier it would have had, so an id that
+	// was already correct does not change under a document that has no repeats.
+	if r.Units[0].ID != id+":article-2:clause-5" {
+		t.Errorf("first unit id = %s, want the plain clause identifier", r.Units[0].ID)
+	}
+	if r.Units[1].ID != id+":article-2:clause-5~2" || r.Units[2].ID != id+":article-2:clause-5~3" {
+		t.Errorf("repeat ids = %s and %s", r.Units[1].ID, r.Units[2].ID)
+	}
+	if r.Units[1].Number != "5" {
+		t.Errorf("number = %q, want the number as the drafter wrote it", r.Units[1].Number)
+	}
+}
+
+// The first fix counted repeats inside one article and the corpus still came
+// back with sixty one collisions, because a document can carry two definitions
+// articles with the same identifier, one in the body and one in an annex the
+// parse never separated. The counter has to span the document.
+func TestARepeatSpanningTwoArticlesIsCaughtToo(t *testing.T) {
+	const id = "vn:law:2014:56-2014-tt-bgtvt"
+	clause := func(text, hash string) law.Provision {
+		return law.Provision{ID: id + ":article-3:clause-1", ParentID: id + ":article-3",
+			Kind: "clause", Number: "1", Text: text, TextHash: hash}
+	}
+	doc := &law.Document{ID: id, Status: "parsed", Provisions: []law.Provision{
+		{ID: id + ":article-3", Kind: "article", Number: "3", Heading: "Giải thích từ ngữ",
+			Text: "Trong Thông tư này, các từ ngữ dưới đây được hiểu như sau:"},
+		clause("Đường bộ là đường, cầu đường bộ, hầm đường bộ.", "hash-a"),
+		clause("Đường bộ là công trình giao thông theo Quy chuẩn này.", "hash-b"),
+		{ID: id + ":article-3", Kind: "article", Number: "3", Heading: "Giải thích từ ngữ",
+			Text: "Trong Quy chuẩn ban hành kèm theo Thông tư này, các từ ngữ dưới đây được hiểu như sau:"},
+	}}
+	r := Anchor(doc)
+	seen := map[string]bool{}
+	for _, u := range r.Units {
+		if seen[u.ID] {
+			t.Errorf("unit id %s appears twice across articles", u.ID)
+		}
+		seen[u.ID] = true
+	}
+	if len(seen) != len(r.Units) || len(r.Units) < 2 {
+		t.Fatalf("units = %d, distinct ids = %d", len(r.Units), len(seen))
+	}
+}
+
 func TestAnchorReportsResidueRatherThanReturningNothing(t *testing.T) {
 	const id = "vn:law:2020:3-2020-qd-ubnd:ubnd-tinh-lang-son"
 	doc := &law.Document{ID: id, Status: "parsed", Provisions: []law.Provision{
