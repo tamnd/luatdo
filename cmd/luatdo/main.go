@@ -4,6 +4,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 )
 
 var version = "dev"
@@ -33,7 +34,8 @@ func run(args []string) error {
 }
 
 func usage(w *os.File) {
-	fmt.Fprint(w, `luatdo builds a Vietnamese legal knowledge graph and exports it to Neo4j.
+	var b strings.Builder
+	b.WriteString(`luatdo builds a Vietnamese legal knowledge graph and exports it to Neo4j.
 
 Usage:
 
@@ -43,9 +45,10 @@ Commands:
 
 `)
 	for _, c := range commands {
-		fmt.Fprintf(w, "  %-10s %s\n", c.name, c.summary)
+		fmt.Fprintf(&b, "  %-10s %s\n", c.name, c.summary)
 	}
-	fmt.Fprint(w, "\nRun \"luatdo <command> -h\" for details on a command.\n")
+	b.WriteString("\nRun \"luatdo <command> -h\" for details on a command.\n")
+	_, _ = w.WriteString(b.String())
 }
 
 type command struct {

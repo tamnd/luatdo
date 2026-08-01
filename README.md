@@ -99,6 +99,9 @@ make build
 Tests use local HTTP servers and scripted model responses.
 They need no credentials and no network.
 
+Linux, macOS, and Windows are all first class.
+CI runs the test suite on Linux, macOS, and Windows, releases ship binaries for all three, and the export directory carries both `import.sh` and `import.cmd`.
+
 ## License
 
 MIT
