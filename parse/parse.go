@@ -205,6 +205,11 @@ type parser struct {
 	article int
 	clause  int
 	point   int
+
+	// quote is how deep the walk is inside a quotation. An amending law quotes
+	// the text it enacts, and everything inside the quotation belongs to the
+	// instruction that opened it rather than to this document's own structure.
+	quote int
 }
 
 func (p *parser) add(prov law.Provision) int {
@@ -338,6 +343,69 @@ func (p *parser) appendText(i int, text string) {
 	prov.Text += text
 }
 
+// sectionOpens reports whether a line opens a section.
+//
+// A section that comes before any article is the easy case and any form of the
+// label opens it. A section that comes after one is the common case and was
+// missed until a consolidated text showed it: "Mục 2" sits between article 7
+// and article 8 of Nghị định số 72/2025/NĐ-CP, and every section after the
+// first article of every document in this corpus was being read as the last
+// line of whatever point preceded it.
+//
+// Inside an article the bar is higher. Only the bare label alone on its line,
+// with the section title on the next line, opens a section, because a line that
+// carries a title after the number is how the sources write a heading and also
+// how a table writes a row.
+func sectionOpens(line string, inArticle bool) bool {
+	m := sectionLine.FindStringSubmatch(line)
+	if m == nil {
+		return false
+	}
+	return !inArticle || strings.TrimSpace(m[2]) == ""
+}
+
+// Fragment parses a block of text as though it were part of the body of the
+// document it belongs to, and returns the components it states.
+//
+// It exists for the temporal layer. An amending decree that says "Sửa đổi, bổ
+// sung Điều 7 như sau:" quotes the whole article, clauses and points included,
+// and that quotation is the article from that day on. Storing it as one blob of
+// text under article 7 answers "what does point b of clause 2 say today" with
+// nothing at all, so the quotation is parsed here, by the same walk that parsed
+// the article it replaces, and becomes components rather than prose.
+//
+// A block with no structure in it yields nothing, which is the ordinary case
+// for a clause or a point being replaced by a sentence.
+func Fragment(docID, body string) []law.Provision { return parseBody(docID, body) }
+
+// TrimMarker removes the number a component's own text opens with, when that
+// number is the component's own.
+//
+// The parser never keeps it: "a) Trường hợp giá..." is stored as point a with
+// text "Trường hợp giá...". Quoted replacement text carries the marker, because
+// the drafter is quoting the point as it will read. Storing the quotation as it
+// arrived puts a marker in front of one point in a document where no other
+// point has one, and a comparison against the published consolidated text then
+// reports six characters of difference as a divergence.
+func TrimMarker(kind, number, text string) string {
+	line, rest, _ := strings.Cut(text, "\n")
+	var m []string
+	switch kind {
+	case "point":
+		m = pointLine.FindStringSubmatch(strings.TrimSpace(line))
+	case "clause":
+		m = clauseLine.FindStringSubmatch(strings.TrimSpace(line))
+	default:
+		return text
+	}
+	// The marker has to name this component. A point whose text opens with a
+	// different letter is quoting something, not labelling itself.
+	if m == nil || law.NumberSegment(m[1]) != law.NumberSegment(number) {
+		return text
+	}
+	return strings.TrimSpace(strings.TrimSpace(m[2]) + "\n" + rest)
+}
+
 // parseBody walks the body line by line. Chapters and sections group
 // articles, articles hold clauses, clauses hold points. Text between an
 // article heading and its first clause belongs to the article, and text after
@@ -350,12 +418,34 @@ func (p *parser) appendText(i int, text string) {
 // header. Everything between the two is discarded, which is what the earlier
 // version did to the annex as well.
 func parseBody(docID, body string) []law.Provision {
+	provisions, balanced := walkBody(docID, body, true)
+	if balanced {
+		return provisions
+	}
+	// A quotation that never closes would swallow the rest of the document into
+	// one provision, which is worse than reading the quoted text as structure.
+	// So an unbalanced document is walked again with the rule switched off, and
+	// gets exactly the parse it got before the rule existed.
+	provisions, _ = walkBody(docID, body, false)
+	return provisions
+}
+
+// walkBody walks the body and reports whether every quotation it opened closed
+// again. quoted switches the quotation rule off for the second attempt.
+func walkBody(docID, body string, quoted bool) ([]law.Provision, bool) {
 	p := &parser{root: docID, annex: -1, chapter: -1, section: -1, article: -1, clause: -1, point: -1}
 
 	lines := bodyLines(body)
 	sawArticle, tail := false, false
 	for i := 0; i < len(lines); i++ {
 		line := lines[i]
+		if quoted && p.quote > 0 {
+			// Inside a quotation. "Điều 73." here is the text being enacted
+			// elsewhere, not an article of this instrument.
+			p.appendText(p.deepest(), line)
+			p.quote = quoteDepth(p.quote, line)
+			continue
+		}
 		if sawArticle {
 			if next, ok := p.openAnnex(docID, lines, i); ok {
 				sawArticle, tail = false, false
@@ -381,7 +471,7 @@ func parseBody(docID, body string) []law.Provision {
 				Heading:  strings.TrimSpace(m[2]),
 			})
 			p.section, p.article, p.clause, p.point = -1, -1, -1, -1
-		case sectionLine.MatchString(line) && p.chapter >= 0 && p.article < 0:
+		case p.chapter >= 0 && sectionOpens(line, p.article >= 0):
 			m := sectionLine.FindStringSubmatch(line)
 			number := law.RomanToArabic(m[1])
 			p.section = p.add(law.Provision{
@@ -443,6 +533,9 @@ func parseBody(docID, body string) []law.Provision {
 		case p.chapter >= 0 && p.article < 0:
 			addHeading(p.at(p.chapter), line)
 		}
+		if quoted {
+			p.quote = quoteDepth(p.quote, line)
+		}
 	}
 
 	for i := range p.provisions {
@@ -450,5 +543,50 @@ func parseBody(docID, body string) []law.Provision {
 			p.provisions[i].TextHash = store.HashBytes([]byte(p.provisions[i].Text))
 		}
 	}
-	return p.provisions
+	return p.provisions, p.quote == 0
+}
+
+// quoteDepth applies one line's quotation marks to the depth carried into it.
+//
+// The corpus mixes the typographic pair with the ASCII mark, sometimes in the
+// same quotation: the 2007 anti corruption amendment opens both of its quoted
+// articles with " and closes one with ” and the other with ". So the two
+// directed marks count as themselves and the ASCII mark counts as whichever
+// one is due next.
+func quoteDepth(depth int, line string) int {
+	for _, r := range line {
+		switch r {
+		case '\u201c':
+			depth++
+		case '\u201d':
+			if depth > 0 {
+				depth--
+			}
+		case '"':
+			if depth > 0 {
+				depth--
+			} else {
+				depth++
+			}
+		}
+	}
+	return depth
+}
+
+// deepest is the provision an unstructured line belongs to: the innermost one
+// the walk has open.
+func (p *parser) deepest() int {
+	switch {
+	case p.point >= 0:
+		return p.point
+	case p.clause >= 0:
+		return p.clause
+	case p.article >= 0:
+		return p.article
+	case p.section >= 0:
+		return p.section
+	case p.chapter >= 0:
+		return p.chapter
+	}
+	return -1
 }
