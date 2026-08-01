@@ -87,7 +87,8 @@ func cmdNorms(args []string) error {
 func cmdReview(args []string) error {
 	fs := flag.NewFlagSet("review", flag.ContinueOnError)
 	dataDir := fs.String("data", "", "data directory")
-	if err := fs.Parse(args); err != nil {
+	sub, rest, err := parseSub(fs, args)
+	if err != nil {
 		return err
 	}
 	s, err := openStore(*dataDir)
@@ -102,7 +103,7 @@ func cmdReview(args []string) error {
 	if err != nil {
 		return err
 	}
-	switch fs.Arg(0) {
+	switch sub {
 	case "", "list":
 		pending := review.Pending(items, decisions)
 		for _, it := range pending {
@@ -117,17 +118,17 @@ func cmdReview(args []string) error {
 		fmt.Printf("%d pending of %d queued\n", len(pending), len(items))
 		return nil
 	case "approve", "reject":
-		id := fs.Arg(1)
+		id := arg(rest, 0)
 		if id == "" {
-			return fmt.Errorf("usage: luatdo review %s <statement-id> [note]", fs.Arg(0))
+			return fmt.Errorf("usage: luatdo review %s <statement-id> [note]", sub)
 		}
 		d := review.Decision{
 			StatementID: id,
-			Verdict:     fs.Arg(0) + "d",
-			Note:        strings.Join(fs.Args()[2:], " "),
+			Verdict:     sub + "d",
+			Note:        strings.Join(rest[1:], " "),
 			At:          time.Now().UTC().Format(time.RFC3339),
 		}
-		if fs.Arg(0) == "reject" {
+		if sub == "reject" {
 			d.Verdict = "rejected"
 		}
 		if err := review.Decide(s.Review(), d); err != nil {

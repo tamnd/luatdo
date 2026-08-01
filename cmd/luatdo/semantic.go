@@ -116,14 +116,14 @@ func cmdOntology(args []string) error {
 	fs := flag.NewFlagSet("ontology", flag.ContinueOnError)
 	dataDir := fs.String("data", "", "data directory")
 	sample := fs.Int("sample", 50, "provisions to sample for bootstrap")
-	if err := fs.Parse(args); err != nil {
+	sub, rest, err := parseSub(fs, args)
+	if err != nil {
 		return err
 	}
 	s, err := openStore(*dataDir)
 	if err != nil {
 		return err
 	}
-	sub := fs.Arg(0)
 	switch sub {
 	case "init":
 		reg := ontology.Seed()
@@ -152,7 +152,7 @@ func cmdOntology(args []string) error {
 		fmt.Printf("%d pending of %d recorded\n", len(pending), len(all))
 		return nil
 	case "approve", "reject", "merge":
-		label := fs.Arg(1)
+		label := arg(rest, 0)
 		if label == "" {
 			return fmt.Errorf("usage: luatdo ontology %s <label> [merged-to]", sub)
 		}
@@ -168,7 +168,7 @@ func cmdOntology(args []string) error {
 		}
 		if sub == "merge" {
 			c.Status = "merged"
-			c.MergedTo = fs.Arg(2)
+			c.MergedTo = arg(rest, 1)
 			if c.MergedTo == "" {
 				return fmt.Errorf("usage: luatdo ontology merge <label> <merged-to>")
 			}
