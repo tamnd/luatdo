@@ -36,8 +36,10 @@ var (
 	// starts with an uppercase letter, because running text that references an
 	// article ("Điều 22 được sửa đổi") continues in lowercase and must not
 	// open a new article.
-	articleLine   = regexp.MustCompile(`^Điều\s+(\d+[a-zđ]?)(?:\.\s*(.*)|\s+(\p{Lu}.*))?$`)
-	clauseLine    = regexp.MustCompile(`^(\d+[a-zđ]?)\.\s+(.*)$`)
+	articleLine = regexp.MustCompile(`^Điều\s+(\d+[a-zđ]?)(?:\.\s*(.*)|\s+(\p{Lu}.*))?$`)
+	// A clause opens with "N. text" or, in some laws, a bare "N." alone on
+	// its line with the clause text on the following lines.
+	clauseLine    = regexp.MustCompile(`^(\d+[a-zđ]?)\.(?:\s+(.*))?$`)
 	pointLine     = regexp.MustCompile(`^([a-zđ]{1,2})\)\s+(.*)$`)
 	numberLine    = regexp.MustCompile(`^Số:\s*([0-9]+/[0-9]{4}/[^\s,;]+)`)
 	signatureLine = regexp.MustCompile(`^(TM\.|KT\.|CHỦ TỊCH QUỐC HỘI|CHỦ TỊCH NƯỚC|Nơi nhận:|XÁC THỰC VĂN BẢN)`)

@@ -6,8 +6,6 @@ import (
 	"os"
 
 	"github.com/neo4j/neo4j-go-driver/v5/neo4j"
-	"github.com/tamnd/luatdo/cite"
-	"github.com/tamnd/luatdo/law"
 )
 
 // Target is a Bolt connection. Values default from the LUATDO_NEO4J
@@ -46,7 +44,8 @@ const mergeBatch = 500
 // Merge upserts the projection over Bolt. Every statement is a MERGE keyed on
 // the stable identifier, so running it twice changes nothing, and it is safe
 // against a live database that already holds an earlier export.
-func Merge(ctx context.Context, target Target, docs []*law.Document, links []cite.Link) error {
+func Merge(ctx context.Context, target Target, in Input) error {
+	docs, links := in.Docs, in.Links
 	driver, err := neo4j.NewDriverWithContext(target.URI, neo4j.BasicAuth(target.User, target.Password, ""))
 	if err != nil {
 		return fmt.Errorf("connect %s: %w", target.URI, err)
@@ -105,9 +104,35 @@ func Merge(ctx context.Context, target Target, docs []*law.Document, links []cit
 		}
 	}
 
+	var termRows, conceptRows, definesRows, mentionsRows []map[string]any
+	seenTerms := map[string]bool{}
+	for _, d := range in.Definitions {
+		if !seenTerms[d.TermID] {
+			seenTerms[d.TermID] = true
+			termRows = append(termRows, map[string]any{"id": d.TermID, "text": d.Term})
+		}
+		definesRows = append(definesRows, map[string]any{"from": d.ProvisionID, "to": d.TermID, "connective": d.Connective})
+	}
+	if in.Registry != nil {
+		for _, c := range in.Registry.Classes {
+			conceptRows = append(conceptRows, map[string]any{"id": c.ID, "label_vi": c.LabelVI, "parent": c.Parent})
+		}
+	}
+	for _, m := range in.Mentions {
+		if m.TargetKind == "unresolved" || m.TargetID == "" {
+			continue
+		}
+		mentionsRows = append(mentionsRows, map[string]any{
+			"from": m.ProvisionID, "to": m.TargetID, "text": m.Text,
+			"class_id": m.ClassID, "score": m.Score, "basis": m.Basis,
+		})
+	}
+
 	for _, statement := range []string{
 		"CREATE CONSTRAINT doc_id IF NOT EXISTS FOR (d:Document) REQUIRE d.id IS UNIQUE",
 		"CREATE CONSTRAINT prov_id IF NOT EXISTS FOR (p:Provision) REQUIRE p.id IS UNIQUE",
+		"CREATE CONSTRAINT term_id IF NOT EXISTS FOR (t:Term) REQUIRE t.id IS UNIQUE",
+		"CREATE CONSTRAINT concept_id IF NOT EXISTS FOR (c:LegalConcept) REQUIRE c.id IS UNIQUE",
 	} {
 		if _, err := session.ExecuteWrite(ctx, func(tx neo4j.ManagedTransaction) (any, error) {
 			return tx.Run(ctx, statement, nil)
@@ -125,6 +150,10 @@ func Merge(ctx context.Context, target Target, docs []*law.Document, links []cit
 		{"UNWIND $rows AS r MATCH (a {id: r.from}), (b {id: r.to}) MERGE (a)-[:CONTAINS]->(b)", containsRows},
 		{"UNWIND $rows AS r MATCH (a {id: r.from}), (b {id: r.to}) MERGE (a)-[c:CITES]->(b) SET c.method = r.method, c.snippet = r.snippet", citesRows},
 		{"UNWIND $rows AS r MATCH (a {id: r.from}), (b {id: r.to}) MERGE (a)-[c:AMENDS]->(b) SET c.method = r.method, c.snippet = r.snippet", amendsRows},
+		{"UNWIND $rows AS r MERGE (t:Term {id: r.id}) SET t.text = r.text", termRows},
+		{"UNWIND $rows AS r MERGE (c:LegalConcept {id: r.id}) SET c.label_vi = r.label_vi, c.parent = r.parent", conceptRows},
+		{"UNWIND $rows AS r MATCH (a {id: r.from}), (b {id: r.to}) MERGE (a)-[d:DEFINES]->(b) SET d.connective = r.connective", definesRows},
+		{"UNWIND $rows AS r MATCH (a {id: r.from}), (b {id: r.to}) MERGE (a)-[m:MENTIONS]->(b) SET m.text = r.text, m.class_id = r.class_id, m.score = r.score, m.basis = r.basis", mentionsRows},
 	}
 	for _, step := range steps {
 		if err := run(step.query, step.rows); err != nil {

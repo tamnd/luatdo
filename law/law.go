@@ -81,6 +81,38 @@ func asciiFold(s string) string {
 	return r.Replace(s)
 }
 
+// vietnameseFold maps every Vietnamese letter with diacritics onto its base
+// ASCII letter. It is the full table, unlike asciiFold, which only covers the
+// characters that appear in issuing body abbreviations.
+var vietnameseFold = func() *strings.Replacer {
+	groups := map[string]string{
+		"a": "áàảãạăắằẳẵặâấầẩẫậ",
+		"e": "éèẻẽẹêếềểễệ",
+		"i": "íìỉĩị",
+		"o": "óòỏõọôốồổỗộơớờởỡợ",
+		"u": "úùủũụưứừửữự",
+		"y": "ýỳỷỹỵ",
+		"d": "đ",
+	}
+	var pairs []string
+	for base, letters := range groups {
+		for _, r := range letters {
+			pairs = append(pairs, string(r), base)
+			pairs = append(pairs, strings.ToUpper(string(r)), strings.ToUpper(base))
+		}
+	}
+	return strings.NewReplacer(pairs...)
+}()
+
+var slugCleanup = regexp.MustCompile(`[^a-z0-9]+`)
+
+// Slug turns a Vietnamese phrase into a stable ASCII identifier segment:
+// "Người sử dụng lao động" becomes "nguoi-su-dung-lao-dong".
+func Slug(s string) string {
+	folded := strings.ToLower(vietnameseFold.Replace(strings.TrimSpace(s)))
+	return strings.Trim(slugCleanup.ReplaceAllString(folded, "-"), "-")
+}
+
 // FileName maps an identifier to a portable file name. Colons are not legal
 // in file names on Windows, and the fleet includes a Windows machine.
 func FileName(id string) string {

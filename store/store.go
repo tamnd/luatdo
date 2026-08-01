@@ -39,10 +39,14 @@ func Open(root string) (*Store, error) {
 	return &Store{Root: root}, nil
 }
 
-func (s *Store) Raw() string    { return filepath.Join(s.Root, "raw") }
-func (s *Store) Docs() string   { return filepath.Join(s.Root, "docs") }
-func (s *Store) Cite() string   { return filepath.Join(s.Root, "cite") }
-func (s *Store) Export() string { return filepath.Join(s.Root, "export") }
+func (s *Store) Raw() string      { return filepath.Join(s.Root, "raw") }
+func (s *Store) Docs() string     { return filepath.Join(s.Root, "docs") }
+func (s *Store) Cite() string     { return filepath.Join(s.Root, "cite") }
+func (s *Store) Terms() string    { return filepath.Join(s.Root, "terms") }
+func (s *Store) Ontology() string { return filepath.Join(s.Root, "ontology") }
+func (s *Store) Extracts() string { return filepath.Join(s.Root, "extract") }
+func (s *Store) Links() string    { return filepath.Join(s.Root, "link") }
+func (s *Store) Export() string   { return filepath.Join(s.Root, "export") }
 
 // WriteFile writes data atomically: a temp file in the same directory,
 // fsynced, then renamed over the destination. os.Rename replaces the
