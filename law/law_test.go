@@ -31,6 +31,69 @@ func TestDocIDRejectsMalformed(t *testing.T) {
 	}
 }
 
+func TestBodyRelative(t *testing.T) {
+	local := []string{
+		"01/2024/QĐ-UBND",
+		"12/2014/NQ-HĐND",
+		"72/2004/QĐ-UB",
+		"02/2026/QĐ-CTUBND",
+		"05/2016/NQ-HĐND8", // the council term is part of the abbreviation
+		"07/2011/QĐ-UBND.", // trailing punctuation is in the corpus
+	}
+	for _, number := range local {
+		if !BodyRelative(number) {
+			t.Errorf("BodyRelative(%q) = false, every province issues this number", number)
+		}
+	}
+	// These name one body each, so the number is already an identity. UBTVQH
+	// and HĐBT are the traps: they start like a local abbreviation and are not.
+	central := []string{
+		"45/2019/QH14",
+		"15/2020/NĐ-CP",
+		"08/2021/TT-BTC",
+		"1234/2011/NQ-UBTVQH12",
+		"49/1991/QĐ-HĐBT",
+		"Hiến pháp 2013",
+	}
+	for _, number := range central {
+		if BodyRelative(number) {
+			t.Errorf("BodyRelative(%q) = true, this number names one body already", number)
+		}
+	}
+}
+
+func TestDocIDIn(t *testing.T) {
+	// A central number ignores the body, so a document keeps one identifier
+	// however its issuer is spelled in a given dataset.
+	central, err := DocIDIn("45/2019/QH14", "Quốc hội")
+	if err != nil || central != "vn:law:2019:45-2019-qh14" {
+		t.Fatalf("DocIDIn central = %q, %v", central, err)
+	}
+
+	longAn, err := DocIDIn("01/2024/QĐ-UBND", "UBND tỉnh Long An")
+	if err != nil {
+		t.Fatalf("DocIDIn: %v", err)
+	}
+	if longAn != "vn:law:2024:01-2024-qd-ubnd:ubnd-tinh-long-an" {
+		t.Errorf("DocIDIn = %q, a local number carries the body that issued it", longAn)
+	}
+	// Case and spacing vary row by row in the corpus and must not fork one
+	// province into two documents.
+	if same, _ := DocIDIn("01/2024/QĐ-UBND", " UBND Tỉnh Long An "); same != longAn {
+		t.Errorf("DocIDIn = %q, want %q from the same body spelled differently", same, longAn)
+	}
+	other, _ := DocIDIn("01/2024/QĐ-UBND", "UBND tỉnh Lạng Sơn")
+	if other == longAn {
+		t.Errorf("two provinces share the identifier %q", other)
+	}
+	if got, err := DocIDIn("01/2024/QĐ-UBND", ""); err == nil {
+		t.Errorf("DocIDIn = %q, a local number with no body is not an identity", got)
+	}
+	if _, err := DocIDIn("khong-so", "UBND tỉnh Long An"); err == nil {
+		t.Error("a number with no year has no identifier whoever issued it")
+	}
+}
+
 func TestProvisionID(t *testing.T) {
 	got := ProvisionID("vn:law:2019:45-2019-qh14", "article", "94")
 	want := "vn:law:2019:45-2019-qh14:article-94"

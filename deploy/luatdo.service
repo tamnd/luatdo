@@ -1,0 +1,36 @@
+[Unit]
+Description=luatdo extraction campaign
+Documentation=https://github.com/tamnd/luatdo
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=luatdo
+Group=luatdo
+WorkingDirectory=/var/lib/luatdo
+Environment=LUATDO_DATA=/var/lib/luatdo
+Environment=LUATDO_ROUTES=/etc/luatdo/routes.json
+EnvironmentFile=-/etc/luatdo/env
+
+# The campaign only starts if at least one route answers. doctor exits nonzero
+# when none is alive, and a campaign that cannot reach a model has nothing to
+# do except burn a queue of retries.
+ExecStartPre=/usr/local/bin/luatdo doctor
+ExecStart=/usr/local/bin/luatdo run --parallel auto
+
+# systemctl stop sends SIGTERM, which luatdo reads as drain: no new provision
+# is started, the ones in flight finish and are written. The timeout is the
+# budget for that drain, after which systemd sends SIGKILL and the unfinished
+# provisions stay in the queue for the next run.
+KillSignal=SIGTERM
+TimeoutStopSec=15min
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/luatdo
+
+[Install]
+WantedBy=multi-user.target

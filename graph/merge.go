@@ -71,7 +71,8 @@ func Merge(ctx context.Context, target Target, in Input) error {
 	var docRows, provRows, containsRows, citesRows, amendsRows []map[string]any
 	for _, d := range docs {
 		docRows = append(docRows, map[string]any{
-			"id": d.ID, "official_number": d.OfficialNumber, "title": d.Title,
+			"id": d.ID, "official_number": d.OfficialNumber, "issuing_body": d.IssuingBody,
+			"title":    d.Title,
 			"title_en": d.TitleEN, "doc_type": d.DocType, "effective_from": d.EffectiveFrom,
 			"source": d.Source, "source_url": d.SourceURL, "status": d.Status,
 		})

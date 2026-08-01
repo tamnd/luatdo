@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -21,10 +22,15 @@ import (
 )
 
 // Dataset describes one upstream dataset and the files luatdo uses from it.
+//
+// A dataset published as several configs is fetched one config at a time,
+// because they differ in size by two orders of magnitude and the small ones
+// are useful long before the big one has finished downloading.
 type Dataset struct {
-	Name  string   // local name, the directory under raw/
-	Repo  string   // Hugging Face dataset repository
-	Files []string // repository paths to download
+	Name    string              // local name, the directory under raw/
+	Repo    string              // Hugging Face dataset repository
+	Files   []string            // repository paths to download
+	Configs map[string][]string // named subsets, when the dataset has them
 }
 
 // Datasets is the registry of known sources.
@@ -40,10 +46,44 @@ var Datasets = map[string]Dataset{
 	"th1nhng0": {
 		Name: "th1nhng0",
 		Repo: "th1nhng0/vietnamese-legal-documents",
-		// The file list is resolved per revision in a later milestone; the
-		// metadata and relationships configs come first because they feed the
-		// deterministic citation graph.
+		// metadata and relationships come first: together they are under
+		// 150 MB and they already carry the document nodes and the official
+		// citation graph. content is 3.5 GB of HTML and only feeds parsing.
+		Configs: map[string][]string{
+			"metadata":      {"data/metadata.parquet"},
+			"relationships": {"data/relationships.parquet"},
+			"content":       {"data/content.parquet"},
+		},
 	},
+}
+
+// Config names the configs of a dataset in fetch order.
+func (d Dataset) Config(name string) (Dataset, error) {
+	if len(d.Configs) == 0 {
+		if name != "" {
+			return d, fmt.Errorf("dataset %s has no configs", d.Name)
+		}
+		return d, nil
+	}
+	if name == "" {
+		return d, fmt.Errorf("dataset %s needs --config, one of: %s", d.Name, strings.Join(d.ConfigNames(), ", "))
+	}
+	files, ok := d.Configs[name]
+	if !ok {
+		return d, fmt.Errorf("dataset %s has no config %q, one of: %s", d.Name, name, strings.Join(d.ConfigNames(), ", "))
+	}
+	d.Files = files
+	return d, nil
+}
+
+// ConfigNames lists the configs in a stable order.
+func (d Dataset) ConfigNames() []string {
+	names := make([]string, 0, len(d.Configs))
+	for name := range d.Configs {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // Manifest records what one fetch wrote, for verification and provenance.

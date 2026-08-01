@@ -37,15 +37,20 @@ func cmdFetch(args []string) error {
 	fs := flag.NewFlagSet("fetch", flag.ContinueOnError)
 	dataDir := fs.String("data", "", "data directory, default LUATDO_DATA or ~/data/luatdo")
 	revision := fs.String("revision", "", "dataset revision, default the current commit")
+	config := fs.String("config", "", "dataset config, for datasets published as several")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 {
-		return fmt.Errorf("usage: luatdo fetch <dataset>, one of: %s", strings.Join(datasetNames(), ", "))
+		return fmt.Errorf("usage: luatdo fetch [--config <name>] <dataset>, one of: %s", strings.Join(datasetNames(), ", "))
 	}
 	ds, ok := fetch.Datasets[fs.Arg(0)]
 	if !ok {
 		return fmt.Errorf("unknown dataset %q, one of: %s", fs.Arg(0), strings.Join(datasetNames(), ", "))
+	}
+	ds, err := ds.Config(*config)
+	if err != nil {
+		return err
 	}
 	s, err := openStore(*dataDir)
 	if err != nil {
@@ -83,6 +88,7 @@ func short(rev string) string {
 func cmdParse(args []string) error {
 	fs := flag.NewFlagSet("parse", flag.ContinueOnError)
 	dataDir := fs.String("data", "", "data directory")
+	dataset := fs.String("dataset", "uts_vlc", "dataset to parse, uts_vlc or th1nhng0")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -90,35 +96,63 @@ func cmdParse(args []string) error {
 	if err != nil {
 		return err
 	}
-	revisionDir, manifest, err := fetch.Latest(s.Raw(), "uts_vlc")
+	revisionDir, manifest, err := fetch.Latest(s.Raw(), *dataset)
 	if err != nil {
 		return err
 	}
-	inputs, err := parse.LoadUTSVLC(revisionDir, manifest.Revision)
-	if err != nil {
-		return err
-	}
+
 	only := fs.Arg(0)
-	parsed, quarantined := 0, 0
-	for _, in := range inputs {
+	parsed, quarantined, metadata, skipped := 0, 0, 0, 0
+	write := func(in parse.Input) error {
 		doc, err := parse.Parse(in)
 		if err != nil {
-			return fmt.Errorf("parse %s: %w", in.OfficialNumber, err)
+			// An official number with no year has no stable identifier. That
+			// is a property of the source, not a failure of this run, so it
+			// is counted and reported rather than aborting a 171k row pass.
+			skipped++
+			return nil
 		}
 		if only != "" && doc.ID != only && doc.OfficialNumber != only {
-			continue
+			return nil
 		}
-		if doc.Status == "quarantined" {
+		switch doc.Status {
+		case "quarantined":
 			quarantined++
-			fmt.Printf("quarantine %s: %s\n", doc.ID, doc.Quarantine)
-		} else {
+			if *dataset == "uts_vlc" {
+				fmt.Printf("quarantine %s: %s\n", doc.ID, doc.Quarantine)
+			}
+		case "metadata":
+			metadata++
+		default:
 			parsed++
 		}
-		if err := store.WriteJSON(filepath.Join(s.Docs(), law.FileName(doc.ID)), doc); err != nil {
+		return store.WriteJSON(filepath.Join(s.Docs(), law.FileName(doc.ID)), doc)
+	}
+
+	switch *dataset {
+	case "uts_vlc":
+		inputs, err := parse.LoadUTSVLC(revisionDir, manifest.Revision)
+		if err != nil {
 			return err
 		}
+		for _, in := range inputs {
+			if err := write(in); err != nil {
+				return err
+			}
+		}
+	case "th1nhng0":
+		stats, err := parse.EachTh1nhng0(revisionDir, manifest.Revision, write)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("th1nhng0: %d metadata rows, %d with content\n", stats.Metadata, stats.Content)
+		fmt.Printf("th1nhng0 rows not taken: %d without a usable official number, %d local without an issuing body, %d translations, %d duplicates of a document already taken\n",
+			stats.Unnumbered, stats.Unattributed, stats.Translation, stats.Duplicate)
+	default:
+		return fmt.Errorf("unknown dataset %q, one of: %s", *dataset, strings.Join(datasetNames(), ", "))
 	}
-	fmt.Printf("parse: %d parsed, %d quarantined\n", parsed, quarantined)
+	fmt.Printf("parse: %d parsed, %d quarantined, %d metadata only, %d without a usable official number\n",
+		parsed, quarantined, metadata, skipped)
 	return nil
 }
 
@@ -156,10 +190,14 @@ func cmdCite(args []string) error {
 	if err != nil {
 		return err
 	}
+	official, dropped, err := officialRelations(s)
+	if err != nil {
+		return err
+	}
 	index := cite.Index(docs)
 	resolved, unresolved := 0, 0
 	for _, doc := range docs {
-		links := cite.Resolve(doc, index)
+		links := cite.Merge(cite.Resolve(doc, index), official[doc.ID])
 		for _, l := range links {
 			if l.ToDoc == "" {
 				unresolved++
@@ -172,7 +210,36 @@ func cmdCite(args []string) error {
 		}
 	}
 	fmt.Printf("cite: %d resolved, %d unresolved across %d documents\n", resolved, unresolved, len(docs))
+	if dropped > 0 {
+		fmt.Printf("cite: %d official relations dropped, they name documents outside the corpus\n", dropped)
+	}
 	return nil
+}
+
+// officialRelations reads the th1nhng0 relationship graph when that dataset
+// has been fetched, grouped by source document. Official links are dataset
+// metadata rather than pattern matches, so they are authoritative wherever
+// they exist and the in-text scan only fills the gaps.
+func officialRelations(s *store.Store) (map[string][]cite.Link, int, error) {
+	revisionDir, _, err := fetch.Latest(s.Raw(), "th1nhng0")
+	if err != nil {
+		return nil, 0, nil
+	}
+	relations, dropped, err := parse.Th1nhng0Relations(revisionDir)
+	if err != nil {
+		return nil, 0, err
+	}
+	out := map[string][]cite.Link{}
+	for _, r := range relations {
+		out[r.FromDoc] = append(out[r.FromDoc], cite.Link{
+			FromDoc: r.FromDoc,
+			ToDoc:   r.ToDoc,
+			Kind:    r.Kind,
+			Method:  "official",
+			Snippet: r.Label,
+		})
+	}
+	return out, dropped, nil
 }
 
 func loadLinks(s *store.Store) ([]cite.Link, error) {
@@ -201,11 +268,12 @@ func cmdExport(args []string) error {
 	fs := flag.NewFlagSet("export", flag.ContinueOnError)
 	dataDir := fs.String("data", "", "data directory")
 	merge := fs.Bool("merge", false, "merge incrementally over Bolt instead of writing CSVs")
+	check := fs.Bool("check", false, "compare the live database against the store and report drift")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 || fs.Arg(0) != "neo4j" {
-		return fmt.Errorf("usage: luatdo export neo4j [--merge]")
+		return fmt.Errorf("usage: luatdo export neo4j [--merge|--check]")
 	}
 	s, err := openStore(*dataDir)
 	if err != nil {
@@ -225,6 +293,21 @@ func cmdExport(args []string) error {
 	in.Mentions, _ = loadResolutions(s)
 	_ = store.ReadJSON(filepath.Join(s.Trusted(), "statements.json"), &in.Statements)
 	summary := graph.Summarize(in)
+	if *check {
+		counts, err := graph.Live(context.Background(), graph.TargetFromEnv())
+		if err != nil {
+			return err
+		}
+		drift := graph.Drift(summary, counts)
+		for _, line := range drift {
+			fmt.Println("drift", line)
+		}
+		if len(drift) > 0 {
+			return fmt.Errorf("%d counters drifted, reimport rather than merge", len(drift))
+		}
+		fmt.Printf("export neo4j check: no drift, %s\n", summary)
+		return nil
+	}
 	if *merge {
 		if err := graph.Merge(context.Background(), graph.TargetFromEnv(), in); err != nil {
 			return err
@@ -245,12 +328,24 @@ func cmdCoverage(args []string) error {
 	fs := flag.NewFlagSet("coverage", flag.ContinueOnError)
 	dataDir := fs.String("data", "", "data directory")
 	verbose := fs.Bool("verbose", false, "list quarantined documents")
+	missing := fs.Bool("missing", false, "list the outstanding extraction queue instead of the report")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	s, err := openStore(*dataDir)
 	if err != nil {
 		return err
+	}
+	if *missing {
+		tasks, err := coverage.Queue(s)
+		if err != nil {
+			return err
+		}
+		for _, t := range tasks {
+			fmt.Printf("%-12s %s\n", t.DocType, t.ProvisionID)
+		}
+		fmt.Printf("%d provisions outstanding\n", len(tasks))
+		return nil
 	}
 	report, err := coverage.Compute(s)
 	if err != nil {

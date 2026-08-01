@@ -39,6 +39,32 @@ func TestResolve(t *testing.T) {
 	}
 }
 
+func TestIndexRefusesAmbiguousNumber(t *testing.T) {
+	longAn := doc("vn:law:2024:01-2024-qd-ubnd:ubnd-tinh-long-an", "01/2024/QĐ-UBND")
+	langSon := doc("vn:law:2024:01-2024-qd-ubnd:ubnd-tinh-lang-son", "01/2024/QĐ-UBND")
+	law2019 := doc("vn:law:2019:45-2019-qh14", "45/2019/QH14")
+	index := Index([]*law.Document{longAn, langSon, law2019})
+
+	if id, ok := index["01/2024/QĐ-UBND"]; ok {
+		t.Errorf("the number resolved to %q, but two provinces issued it", id)
+	}
+	if index["45/2019/QH14"] != law2019.ID {
+		t.Errorf("a number one document holds still resolves, got %q", index["45/2019/QH14"])
+	}
+
+	// A citation of the ambiguous number is reported with no target rather than
+	// pointed at whichever province happened to be indexed last.
+	source := doc("vn:law:2024:09-2024-qd-ubnd:ubnd-tinh-long-an", "09/2024/QĐ-UBND", law.Provision{
+		ID:   "vn:law:2024:09-2024-qd-ubnd:ubnd-tinh-long-an:article-1",
+		Kind: "article",
+		Text: "Bãi bỏ Quyết định số 01/2024/QĐ-UBND.",
+	})
+	links := Resolve(source, index)
+	if len(links) != 1 || links[0].ToDoc != "" {
+		t.Fatalf("links = %+v, want one unresolved citation", links)
+	}
+}
+
 func TestResolveAmends(t *testing.T) {
 	source := doc("vn:law:2012:26-2012-qh13", "26/2012/QH13", law.Provision{
 		ID:   "vn:law:2012:26-2012-qh13:article-1",
@@ -91,5 +117,39 @@ func TestResolveDeduplicates(t *testing.T) {
 	links := Resolve(source, Index([]*law.Document{source, target}))
 	if len(links) != 1 {
 		t.Errorf("duplicate citation in one provision produced %d links", len(links))
+	}
+}
+
+func TestMergePrefersOfficialMetadata(t *testing.T) {
+	pattern := []Link{
+		{FromDoc: "a", FromProvision: "a:article-1", ToNumber: "10/2012/QH13", ToDoc: "b", Kind: "amends", Method: "pattern"},
+		{FromDoc: "a", FromProvision: "a:article-2", ToNumber: "11/2013/QH13", ToDoc: "c", Kind: "cites", Method: "pattern"},
+		{FromDoc: "a", FromProvision: "a:article-3", ToNumber: "99/2099/NĐ-CP", Kind: "cites", Method: "pattern"},
+	}
+	official := []Link{
+		{FromDoc: "a", ToDoc: "b", Kind: "amends", Method: "official"},
+	}
+	got := Merge(pattern, official)
+	if len(got) != 3 {
+		t.Fatalf("merged = %d links, want the official one plus the two it does not cover", len(got))
+	}
+	if got[0].Method != "official" {
+		t.Errorf("first link = %+v, official metadata leads", got[0])
+	}
+	for _, l := range got[1:] {
+		if l.ToDoc == "b" {
+			t.Errorf("%+v duplicates an edge the dataset already states", l)
+		}
+	}
+	if got[2].ToDoc != "" || got[2].ToNumber != "99/2099/NĐ-CP" {
+		t.Errorf("unresolved pattern link = %+v, it must survive the merge", got[2])
+	}
+}
+
+func TestMergeWithoutOfficialMetadata(t *testing.T) {
+	pattern := []Link{{FromDoc: "a", ToDoc: "b", Kind: "cites", Method: "pattern"}}
+	got := Merge(pattern, nil)
+	if len(got) != 1 || got[0].Method != "pattern" {
+		t.Errorf("merged = %+v, a corpus with no official graph keeps every pattern hit", got)
 	}
 }

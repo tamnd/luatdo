@@ -36,6 +36,21 @@ And the naive approach, documents into an LLM into arbitrary triples into a data
 
 Dataset revisions are pinned and raw bytes are immutable once fetched, so every document keeps its provenance.
 
+The breadth corpus is published as three configs, fetched one at a time:
+
+```sh
+luatdo fetch --config metadata th1nhng0        # 171k rows, titles, numbers, dates
+luatdo fetch --config relationships th1nhng0   # 1M official citation and amendment edges
+luatdo fetch --config content th1nhng0         # the full text, 3.5 GB
+luatdo parse --dataset th1nhng0
+```
+
+Metadata alone is already worth having: every document becomes a node and the official relationship graph gets its edges.
+A document whose text has not been downloaded is marked text pending rather than left out, because an edge pointing at a document that is not there is worse than a document that is honestly incomplete.
+
+The 171,556 metadata rows are not 171,556 documents, and `luatdo parse` says what it did with every row it did not take: numbers with no year and so no stable identifier, local numbers with no issuing body, English translations that carry the number of the document they translate, and rows that duplicate a document already taken.
+What comes out is about 128,000 documents.
+
 ## Quick start
 
 ```sh
@@ -57,7 +72,7 @@ Then open http://localhost:7474 and ask the graph something:
 ```cypher
 // Amendment history of the 2019 Labor Code
 MATCH path = (d:Document {id:'vn:law:2019:45-2019-qh14'})
-             <-[:AMENDS|REPLACES*0..]-(later:Document)
+             <-[:AMENDS*0..]-(later:Document)
 RETURN path
 ```
 
@@ -78,8 +93,8 @@ RETURN path
 | `luatdo build` | Assemble verified statements into the trusted store |
 | `luatdo export neo4j` | Project the trusted store into Neo4j, full import or incremental merge |
 | `luatdo coverage` | Report what is parsed, extracted, verified, and exported, recomputed from disk |
-| `luatdo run` | The campaign: work the coverage queue until it is empty |
-| `luatdo doctor` | Probe model routes and report which are alive |
+| `luatdo run` | The campaign: work the coverage queue with parallel workers until it is empty |
+| `luatdo doctor` | Probe model routes and report which are alive, and what the store holds |
 
 Identifiers are structural and reproducible, never generated:
 
@@ -88,6 +103,50 @@ vn:law:2019:45-2019-qh14
 vn:law:2019:45-2019-qh14:article-94
 vn:law:2019:45-2019-qh14:article-94:clause-1
 ```
+
+A number issued centrally names one instrument and is an identity on its own.
+A number issued by a province is not: every province issues its own `01/2024/QĐ-UBND`, so the identifier of a local document carries the body that signed it, and text citing that number without naming a province stays unresolved rather than being pointed at whichever province was loaded last.
+
+```text
+vn:law:2024:01-2024-qd-ubnd:ubnd-tinh-long-an
+```
+
+## Running a campaign
+
+A campaign is a long job against a metered service, so it is built to be interrupted.
+The queue is recomputed from disk on every run, work is committed one provision at a time, and a provision that fails leaves no artifact, which is exactly what puts it back in the queue next time.
+
+Model access is a routes file: named endpoints in rank order, each with its own credential and its own rate card.
+
+```sh
+luatdo doctor --suggest-routes > ~/.config/luatdo/routes.json
+luatdo doctor
+luatdo run --parallel auto
+```
+
+Failover is per call and matched to the cause.
+A quota error cools that route for five minutes, a transport blip for thirty seconds, and an authentication failure disables it for the process because retrying a bad credential is pointless.
+Every call records which endpoint served it, so a corpus assembled from three endpoints can still say where each statement came from.
+
+Each provision reports what it cost:
+
+```text
+norms vn:law:2019:45-2019-qh14:article-94:clause-1 route=subscription statements=3 entailed=3 review=1 time=6s tokens=4812 cost=$0.0141
+campaign: 412 done, 0 failed, 0 skipped of 412 queued, 1180 statements, 1094 entailed, 143 in review, 2137440 tokens, cost $6.2841, 21m14s
+```
+
+A route with no rate card reports its cost as unavailable, and any total that includes it is unavailable too.
+An invented zero would quietly understate a campaign, so nothing invents one.
+
+The first interrupt drains: no new provision starts, the ones in flight finish and are written, and the accounting reports what actually ran.
+A second interrupt aborts.
+Every run writes a summary to `<data>/campaign/`, and `luatdo coverage --missing` prints what is left.
+
+## Deployment
+
+The binary is static and the state is one data directory, so a host is a copy and a timer.
+`deploy/` carries a systemd unit and timer for Linux and a scheduled task script for Windows, both guarded by `luatdo doctor` so a campaign never starts when no route is alive.
+See [deploy/README.md](deploy/README.md).
 
 ## Status
 

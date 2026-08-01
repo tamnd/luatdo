@@ -53,10 +53,10 @@ func Export(dir string, in Input) error {
 		return err
 	}
 	if err := writeCSV(filepath.Join(dir, "documents.csv"),
-		[]string{"id:ID", "official_number", "title", "title_en", "doc_type", "effective_from", "source", "source_url", "status", ":LABEL"},
+		[]string{"id:ID", "official_number", "issuing_body", "title", "title_en", "doc_type", "effective_from", "source", "source_url", "status", ":LABEL"},
 		func(w *csv.Writer) error {
 			for _, d := range docs {
-				if err := w.Write([]string{d.ID, d.OfficialNumber, d.Title, d.TitleEN, d.DocType, d.EffectiveFrom, d.Source, d.SourceURL, d.Status, "Document"}); err != nil {
+				if err := w.Write([]string{d.ID, d.OfficialNumber, d.IssuingBody, d.Title, d.TitleEN, d.DocType, d.EffectiveFrom, d.Source, d.SourceURL, d.Status, "Document"}); err != nil {
 					return err
 				}
 			}
