@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/tamnd/luatdo/anchor"
+	"github.com/tamnd/luatdo/campaign"
 	"github.com/tamnd/luatdo/cite"
 	"github.com/tamnd/luatdo/concept"
 	"github.com/tamnd/luatdo/coverage"
@@ -18,8 +19,10 @@ import (
 	"github.com/tamnd/luatdo/law"
 	"github.com/tamnd/luatdo/ontology"
 	"github.com/tamnd/luatdo/parse"
+	"github.com/tamnd/luatdo/relation"
 	"github.com/tamnd/luatdo/store"
 	"github.com/tamnd/luatdo/subject"
+	"github.com/tamnd/luatdo/temporal"
 )
 
 func init() {
@@ -361,11 +364,15 @@ func cmdExport(args []string) error {
 	check := fs.Bool("check", false, "compare the live database against the store and report drift")
 	scope := fs.String("campaign", "", "run the release gates over a named campaign before exporting")
 	force := fs.Bool("force", false, "export even though the release gates failed, and say so in the output")
-	if err := fs.Parse(args); err != nil {
+	// parseSub rather than fs.Parse, because flag stops at the first argument
+	// that is not a flag and "luatdo export neo4j --campaign labour-2025" would
+	// otherwise dump the whole corpus without a word about the flag it ignored.
+	sub, rest, err := parseSub(fs, args)
+	if err != nil {
 		return err
 	}
-	if fs.NArg() != 1 || fs.Arg(0) != "neo4j" {
-		return fmt.Errorf("usage: luatdo export neo4j [--merge|--check]")
+	if sub != "neo4j" || len(rest) > 0 {
+		return fmt.Errorf("usage: luatdo export neo4j [--merge|--check] [--campaign <name>]")
 	}
 	s, err := openStore(*dataDir)
 	if err != nil {
@@ -392,6 +399,33 @@ func cmdExport(args []string) error {
 	}
 	_ = store.ReadJSON(filepath.Join(s.Trusted(), "statements.json"), &in.Statements)
 	in.Layer, _ = concept.ReadLayer(s.Concepts())
+	// The relation layer and the temporal layer are loaded on the same terms as
+	// everything else here: if the pass has not been run the projection goes
+	// without them. Both were built milestones ago and neither was ever handed
+	// to the exporter, so the database held a document graph with a norm layer
+	// bolted on and none of the concept relations or amendment history that half
+	// the competency questions are asked of. Nothing failed, because nothing
+	// asked.
+	in.Relations, _ = relation.ReadEdges(s.Relation())
+	in.Temporal, _ = temporal.ReadLayer(s.Temporal())
+
+	// A campaign scopes the dump as well as the gates. The whole corpus is not
+	// the unit anybody works with: a person asking about labour law wants the
+	// labour campaign, and a dump of everything is slower to load and harder to
+	// read a query result out of. Naming the campaign twice, once to gate and
+	// once to cut, would be two chances to name a different one.
+	if *scope != "" {
+		sc, err := campaign.LookupScope(*scope)
+		if err != nil {
+			return err
+		}
+		_, keep, err := campaignDocs(s, sc)
+		if err != nil {
+			return err
+		}
+		in = graph.Restrict(in, keep)
+		fmt.Printf("scoped to campaign %s: %d documents\n", sc.Name, len(in.Docs))
+	}
 	summary := graph.Summarize(in)
 
 	// The release gates sit on the road out. A checklist beside the road is

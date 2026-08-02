@@ -31,6 +31,38 @@ jobs:
       - name: Build
         run: go build ./...
 
+  # The competency questions against a real database. Everything else about the
+  # queries is checked as text, and text checks do not catch a query that runs
+  # and returns the wrong rows, which is the only failure anybody outside this
+  # repository ever sees. Linux only, because the runners for the other two
+  # platforms cannot start a Linux service container. The Windows import script
+  # and the dump layout are checked on all three in the job above.
+  graph:
+    runs-on: ubuntu-latest
+    services:
+      neo4j:
+        image: neo4j:5.26
+        env:
+          NEO4J_AUTH: neo4j/luatdotest
+          NEO4J_server_memory_heap_max__size: 512m
+        ports:
+          - 7687:7687
+        options: >-
+          --health-cmd "cypher-shell -u neo4j -p luatdotest 'RETURN 1'"
+          --health-interval 10s
+          --health-timeout 10s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Ask the graph all twenty three questions
+        env:
+          LUATDO_NEO4J_TEST_URI: neo4j://localhost:7687
+          LUATDO_NEO4J_TEST_PASSWORD: luatdotest
+        run: go test -race -count=1 ./graph/
+
   lint:
     runs-on: ubuntu-latest
     steps:

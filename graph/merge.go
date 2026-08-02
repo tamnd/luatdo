@@ -10,6 +10,7 @@ import (
 	"github.com/tamnd/luatdo/concept"
 	"github.com/tamnd/luatdo/law"
 	"github.com/tamnd/luatdo/subject"
+	"github.com/tamnd/luatdo/temporal"
 )
 
 // asAny hands a string list to the driver as a list rather than as a Go slice
@@ -92,27 +93,28 @@ func Merge(ctx context.Context, target Target, in Input) error {
 			"title_en": d.TitleEN, "doc_type": d.DocType, "effective_from": d.EffectiveFrom,
 			"source": d.Source, "source_url": d.SourceURL, "status": d.Status,
 		})
-		components, versions := law.Split(d)
-		for i := range components {
-			c := &components[i]
-			componentRows = append(componentRows, map[string]any{
-				"id": c.ID, "kind": c.Kind, "number": c.Number,
-				"heading": c.Heading, "position": c.Position, "renumbered_from": c.RenumberedFrom,
-			})
-			parent := c.ParentID
-			if parent == "" {
-				parent = d.ID
-			}
-			containsRows = append(containsRows, map[string]any{"from": parent, "to": c.ID})
-		}
-		for i := range versions {
-			v := &versions[i]
-			versionRows = append(versionRows, map[string]any{
-				"id": v.ID, "text": v.Text, "text_hash": v.TextHash,
-				"from_date": v.FromDate, "to_date": v.ToDate,
-			})
-			hasVersionRows = append(hasVersionRows, map[string]any{"from": v.ComponentID, "to": v.ID})
-		}
+	}
+	// The same walkers the CSV writer uses, so the two paths cannot disagree
+	// about which components a document has.
+	if err := eachComponent(docs, func(d *law.Document, c *law.Component) error {
+		componentRows = append(componentRows, map[string]any{
+			"id": c.ID, "kind": c.Kind, "number": c.Number,
+			"heading": c.Heading, "position": c.Position, "renumbered_from": c.RenumberedFrom,
+		})
+		containsRows = append(containsRows, map[string]any{"from": containerOf(d, c), "to": c.ID})
+		return nil
+	}); err != nil {
+		return err
+	}
+	if err := eachVersion(docs, func(_ *law.Document, v *law.TextVersion) error {
+		versionRows = append(versionRows, map[string]any{
+			"id": v.ID, "text": v.Text, "text_hash": v.TextHash,
+			"from_date": v.FromDate, "to_date": v.ToDate,
+		})
+		hasVersionRows = append(hasVersionRows, map[string]any{"from": v.ComponentID, "to": v.ID})
+		return nil
+	}); err != nil {
+		return err
 	}
 	for _, l := range links {
 		if l.ToDoc == "" {
@@ -176,6 +178,7 @@ func Merge(ctx context.Context, target Target, in Input) error {
 	var normRows, hasNormRows []map[string]any
 	detailRows := map[string][]map[string]any{}
 	normEdgeRows := map[string][]map[string]any{}
+	classes := registryClasses(in)
 	for i := range in.Statements {
 		r := &in.Statements[i]
 		row := normFields(r)
@@ -183,7 +186,7 @@ func Merge(ctx context.Context, target Target, in Input) error {
 		normRows = append(normRows, row)
 		hasNormRows = append(hasNormRows, map[string]any{"from": r.ProvisionID, "to": r.ID})
 		normEdgeRows["HAS_LEGAL_BASIS"] = append(normEdgeRows["HAS_LEGAL_BASIS"], map[string]any{"from": r.ID, "to": r.ProvisionID})
-		if err := eachNormClass(r, func(classID, relType string) error {
+		if err := eachNormClass(r, classes, func(classID, relType string) error {
 			normEdgeRows[relType] = append(normEdgeRows[relType], map[string]any{"from": r.ID, "to": classID})
 			return nil
 		}); err != nil {
@@ -261,6 +264,49 @@ func Merge(ctx context.Context, target Target, in Input) error {
 		return err
 	}
 
+	var eventRows, temporalVersionRows, aboutConceptRows []map[string]any
+	relationRows := map[string][]map[string]any{}
+	temporalEdgeRows := map[string][]map[string]any{}
+	if err := eachRelation(in, func(r relationRow) error {
+		relationRows[r.Type] = append(relationRows[r.Type], map[string]any{
+			"from": r.From, "to": r.To, "status": r.Status, "source": r.Source,
+			"support": r.Support, "support_docs": r.SupportDocs,
+			"confidence": r.Confidence, "direction": r.Direction,
+			"quote": r.Quote, "provision_id": r.ProvisionID,
+		})
+		return nil
+	}); err != nil {
+		return err
+	}
+	if err := eachNormConcept(in, func(normID, conceptID, role string) error {
+		aboutConceptRows = append(aboutConceptRows, map[string]any{"from": normID, "to": conceptID, "role": role})
+		return nil
+	}); err != nil {
+		return err
+	}
+	if err := eachEvent(in, func(e *temporal.Event) error {
+		row := eventFields(e)
+		row["id"] = e.ID
+		eventRows = append(eventRows, row)
+		return nil
+	}); err != nil {
+		return err
+	}
+	if err := eachTemporalVersion(in, func(v *temporal.Version) error {
+		row := temporalVersionFields(v)
+		row["id"] = v.ID
+		temporalVersionRows = append(temporalVersionRows, row)
+		return nil
+	}); err != nil {
+		return err
+	}
+	if err := eachTemporalEdge(in, func(from, to, relType string) error {
+		temporalEdgeRows[relType] = append(temporalEdgeRows[relType], map[string]any{"from": from, "to": to})
+		return nil
+	}); err != nil {
+		return err
+	}
+
 	for _, statement := range []string{
 		"CREATE CONSTRAINT doc_id IF NOT EXISTS FOR (d:Document) REQUIRE d.id IS UNIQUE",
 		"CREATE CONSTRAINT component_id IF NOT EXISTS FOR (c:Component) REQUIRE c.id IS UNIQUE",
@@ -269,8 +315,13 @@ func Merge(ctx context.Context, target Target, in Input) error {
 		"CREATE CONSTRAINT concept_id IF NOT EXISTS FOR (c:LegalConcept) REQUIRE c.id IS UNIQUE",
 		"CREATE CONSTRAINT subject_id IF NOT EXISTS FOR (s:Subject) REQUIRE s.id IS UNIQUE",
 		"CREATE CONSTRAINT norm_id IF NOT EXISTS FOR (n:Norm) REQUIRE n.id IS UNIQUE",
+		"CREATE CONSTRAINT condition_id IF NOT EXISTS FOR (n:Condition) REQUIRE n.id IS UNIQUE",
+		"CREATE CONSTRAINT exception_id IF NOT EXISTS FOR (n:Exception) REQUIRE n.id IS UNIQUE",
+		"CREATE CONSTRAINT sanction_id IF NOT EXISTS FOR (n:Sanction) REQUIRE n.id IS UNIQUE",
 		"CREATE CONSTRAINT term_use_id IF NOT EXISTS FOR (t:TermUse) REQUIRE t.id IS UNIQUE",
 		"CREATE CONSTRAINT merged_concept_id IF NOT EXISTS FOR (c:Concept) REQUIRE c.id IS UNIQUE",
+		"CREATE CONSTRAINT event_id IF NOT EXISTS FOR (e:" + EventLabel + ") REQUIRE e.id IS UNIQUE",
+		"CREATE CONSTRAINT temporal_version_id IF NOT EXISTS FOR (v:" + TemporalVersionLabel + ") REQUIRE v.id IS UNIQUE",
 	} {
 		if _, err := session.ExecuteWrite(ctx, func(tx neo4j.ManagedTransaction) (any, error) {
 			return tx.Run(ctx, statement, nil)
@@ -283,6 +334,20 @@ func Merge(ctx context.Context, target Target, in Input) error {
 		query string
 		rows  []map[string]any
 	}
+	// Every relationship step names the labels its endpoints carry, and the
+	// reason is speed rather than tidiness. An unlabelled MATCH (a {id: r.from})
+	// cannot use the uniqueness constraint, so the planner reads the whole node
+	// store twice and takes the cartesian product, once per row. The fixture has
+	// forty nodes and never noticed. The corpus has a hundred and thirty six
+	// thousand, and the merge that found this had written eight thousand edges
+	// in the time the labelled form takes to write all of them.
+	//
+	// Where an endpoint really can be either of two labels the pattern says so.
+	// Neo4j plans a label disjunction as a union of two index seeks, so
+	// Document|Component costs one extra seek rather than a scan. A container is
+	// a document for a top level article and a component for a clause under one,
+	// and a citation leaves from whichever of the two the extractor could pin
+	// the reference to.
 	steps := []step{
 		{"UNWIND $rows AS r MERGE (d:Document {id: r.id}) SET d += r", docRows},
 		// The alias label is set here as well as on the node created by a full
@@ -290,17 +355,21 @@ func Merge(ctx context.Context, target Target, in Input) error {
 		// the same labels either way.
 		{"UNWIND $rows AS r MERGE (c:Component {id: r.id}) SET c += r, c:" + law.ProvisionAlias, componentRows},
 		{"UNWIND $rows AS r MERGE (v:TextVersion {id: r.id}) SET v += r", versionRows},
-		{"UNWIND $rows AS r MATCH (a {id: r.from}), (b {id: r.to}) MERGE (a)-[:CONTAINS]->(b)", containsRows},
-		{"UNWIND $rows AS r MATCH (a {id: r.from}), (b {id: r.to}) MERGE (a)-[:HAS_VERSION]->(b)", hasVersionRows},
-		{"UNWIND $rows AS r MATCH (a {id: r.from}), (b {id: r.to}) MERGE (a)-[c:CITES]->(b) SET c.method = r.method, c.snippet = r.snippet", citesRows},
-		{"UNWIND $rows AS r MATCH (a {id: r.from}), (b {id: r.to}) MERGE (a)-[c:AMENDS]->(b) SET c.method = r.method, c.snippet = r.snippet", amendsRows},
+		{"UNWIND $rows AS r MATCH (a:Document|Component {id: r.from}), (b:Component {id: r.to}) MERGE (a)-[:CONTAINS]->(b)", containsRows},
+		{"UNWIND $rows AS r MATCH (a:Component {id: r.from}), (b:TextVersion {id: r.to}) MERGE (a)-[:HAS_VERSION]->(b)", hasVersionRows},
+		{"UNWIND $rows AS r MATCH (a:Document|Component {id: r.from}), (b:Document {id: r.to}) MERGE (a)-[c:CITES]->(b) SET c.method = r.method, c.snippet = r.snippet", citesRows},
+		{"UNWIND $rows AS r MATCH (a:Document|Component {id: r.from}), (b:Document {id: r.to}) MERGE (a)-[c:AMENDS]->(b) SET c.method = r.method, c.snippet = r.snippet", amendsRows},
 		{"UNWIND $rows AS r MERGE (t:Term {id: r.id}) SET t.text = r.text", termRows},
 		{"UNWIND $rows AS r MERGE (c:LegalConcept {id: r.id}) SET c.label_vi = r.label_vi, c.parent = r.parent", conceptRows},
-		{"UNWIND $rows AS r MATCH (a {id: r.from}), (b {id: r.to}) MERGE (a)-[d:DEFINES]->(b) SET d.connective = r.connective", definesRows},
-		{"UNWIND $rows AS r MATCH (a {id: r.from}), (b {id: r.to}) MERGE (a)-[m:MENTIONS]->(b) SET m.text = r.text, m.class_id = r.class_id, m.score = r.score, m.basis = r.basis", mentionsRows},
+		{"UNWIND $rows AS r MATCH (a:Component {id: r.from}), (b:Term {id: r.to}) MERGE (a)-[d:DEFINES]->(b) SET d.connective = r.connective", definesRows},
+		// A mention resolves to a term or to a registry class, and the linker
+		// records which in the row it is not asked for here. Both labels are
+		// listed rather than the step being split in two, because the two kinds
+		// are one relationship type in every query that reads them.
+		{"UNWIND $rows AS r MATCH (a:Component {id: r.from}), (b:Term|LegalConcept {id: r.to}) MERGE (a)-[m:MENTIONS]->(b) SET m.text = r.text, m.class_id = r.class_id, m.score = r.score, m.basis = r.basis", mentionsRows},
 		{"UNWIND $rows AS r MERGE (s:Subject {id: r.id}) SET s += r", subjectRows},
 		{"UNWIND $rows AS r MATCH (a:Subject {id: r.from}), (b:Subject {id: r.to}) MERGE (a)-[:BROADER]->(b)", broaderRows},
-		{"UNWIND $rows AS r MATCH (a {id: r.from}), (b:Subject {id: r.to}) MERGE (a)-[s:ABOUT_SUBJECT]->(b) SET s.confidence = r.confidence, s.method = r.method", aboutRows},
+		{"UNWIND $rows AS r MATCH (a:Document {id: r.from}), (b:Subject {id: r.to}) MERGE (a)-[s:ABOUT_SUBJECT]->(b) SET s.confidence = r.confidence, s.method = r.method", aboutRows},
 		{"UNWIND $rows AS r MERGE (n:Norm {id: r.id}) SET n += r", normRows},
 	}
 	// Detail node labels and norm relationship types are static per query, so
@@ -308,9 +377,20 @@ func Merge(ctx context.Context, target Target, in Input) error {
 	for _, label := range []string{"Condition", "Exception", "Sanction"} {
 		steps = append(steps, step{"UNWIND $rows AS r MERGE (n:" + label + " {id: r.id}) SET n += r", detailRows[label]})
 	}
-	steps = append(steps, step{"UNWIND $rows AS r MATCH (a {id: r.from}), (b {id: r.to}) MERGE (a)-[:HAS_NORM]->(b)", hasNormRows})
-	for _, relType := range []string{"HAS_LEGAL_BASIS", "HAS_BEARER", "HAS_COUNTERPARTY", "HAS_OBJECT", "HAS_CONDITION", "HAS_EXCEPTION", "HAS_SANCTION"} {
-		steps = append(steps, step{"UNWIND $rows AS r MATCH (a {id: r.from}), (b {id: r.to}) MERGE (a)-[:" + relType + "]->(b)", normEdgeRows[relType]})
+	steps = append(steps, step{"UNWIND $rows AS r MATCH (a:Component {id: r.from}), (b:Norm {id: r.to}) MERGE (a)-[:HAS_NORM]->(b)", hasNormRows})
+	// Each norm edge points at a different kind of thing, so the target label is
+	// part of the table rather than something the loop can guess.
+	for _, e := range []struct{ relType, to string }{
+		{"HAS_LEGAL_BASIS", "Component"},
+		{"HAS_BEARER", "LegalConcept"},
+		{"HAS_COUNTERPARTY", "LegalConcept"},
+		{"HAS_OBJECT", "LegalConcept"},
+		{"HAS_CONDITION", "Condition"},
+		{"HAS_EXCEPTION", "Exception"},
+		{"HAS_SANCTION", "Sanction"},
+	} {
+		steps = append(steps, step{"UNWIND $rows AS r MATCH (a:Norm {id: r.from}), (b:" + e.to + " {id: r.to}) " +
+			"MERGE (a)-[:" + e.relType + "]->(b)", normEdgeRows[e.relType]})
 	}
 	steps = append(steps,
 		step{"UNWIND $rows AS r MERGE (t:TermUse {id: r.id}) SET t += r", termUseRows},
@@ -327,8 +407,46 @@ func Merge(ctx context.Context, target Target, in Input) error {
 			"SET e.decided_by = r.decided_by, e.decided_at = r.decided_at, e.rationale = r.rationale, e.basis = r.basis",
 			differsFromRows},
 	)
-	for _, relType := range []string{"DEFINES_TERM", "IN_SCOPE", "REFERS_TO"} {
-		steps = append(steps, step{"UNWIND $rows AS r MATCH (a {id: r.from}), (b {id: r.to}) MERGE (a)-[:" + relType + "]->(b)", termUseEdgeRows[relType]})
+	// A term use is defined by a provision and scoped to an instrument, and the
+	// layer accepts a document at either end because a definition article
+	// sometimes scopes to the whole law rather than to a clause of it.
+	for _, e := range []struct{ relType, from, to string }{
+		{"DEFINES_TERM", "Document|Component", "TermUse"},
+		{"IN_SCOPE", "TermUse", "Document|Component"},
+		{"REFERS_TO", "TermUse", "TermUse"},
+	} {
+		steps = append(steps, step{"UNWIND $rows AS r MATCH (a:" + e.from + " {id: r.from}), (b:" + e.to + " {id: r.to}) " +
+			"MERGE (a)-[:" + e.relType + "]->(b)", termUseEdgeRows[e.relType]})
+	}
+	steps = append(steps,
+		step{"UNWIND $rows AS r MERGE (e:" + EventLabel + " {id: r.id}) SET e += r", eventRows},
+		step{"UNWIND $rows AS r MERGE (v:" + TemporalVersionLabel + " {id: r.id}) SET v += r", temporalVersionRows},
+	)
+	// A concept relation is matched between Concept nodes on both ends. Leaving
+	// the labels off would let an identifier that happens to be shared with
+	// another layer attach a REQUIRES edge to something that is not a concept,
+	// which is the sort of thing a merge does quietly and a reader never finds.
+	for _, relType := range RelationTypes() {
+		steps = append(steps, step{"UNWIND $rows AS r MATCH (a:Concept {id: r.from}), (b:Concept {id: r.to}) " +
+			"MERGE (a)-[e:" + relType + "]->(b) " +
+			"SET e.status = r.status, e.source = r.source, e.support = r.support, e.support_docs = r.support_docs, " +
+			"e.confidence = r.confidence, e.direction = r.direction, e.quote = r.quote, e.provision_id = r.provision_id",
+			relationRows[relType]})
+	}
+	// The role is part of the merge key. A norm whose bearer and whose object
+	// resolve to the same concept holds two different claims about it, and one
+	// edge keyed on the pair alone would keep whichever role was written last.
+	steps = append(steps, step{"UNWIND $rows AS r MATCH (a:Norm {id: r.from}), (b:Concept {id: r.to}) " +
+		"MERGE (a)-[:" + AboutConcept + " {role: r.role}]->(b)", aboutConceptRows})
+	for _, e := range []struct{ relType, from, to string }{
+		{HasTemporalVersion, "Component", TemporalVersionLabel},
+		{Includes, TemporalVersionLabel, TemporalVersionLabel},
+		{CausedBy, EventLabel, "Document"},
+		{Terminates, EventLabel, TemporalVersionLabel},
+		{ProducesVersion, EventLabel, TemporalVersionLabel},
+	} {
+		steps = append(steps, step{"UNWIND $rows AS r MATCH (a:" + e.from + " {id: r.from}), (b:" + e.to + " {id: r.to}) " +
+			"MERGE (a)-[:" + e.relType + "]->(b)", temporalEdgeRows[e.relType]})
 	}
 	for _, step := range steps {
 		if err := run(step.query, step.rows); err != nil {

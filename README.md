@@ -73,7 +73,38 @@ luatdo ontology init
 luatdo export neo4j
 ```
 
-Then open http://localhost:7474 and ask the graph something:
+Then ask the graph one of the twenty three competency questions, without writing any Cypher:
+
+```sh
+luatdo graph list                 # the twenty three, and the parameters each takes
+luatdo graph ask --question 20    # which norms a later redefinition put in doubt
+```
+
+```text
+20. A concept was redefined by a later instrument. Which earlier norms mentioning it are now potentially affected, and which of them were never amended?
+asked with limit = 200
+
+[1]
+  concept             người lao động
+  redefined_by        vn:law:2019:45-2019-qh14
+  redefined_on        2021-01-01
+  affected_document   vn:law:2014:58-2014-qh13
+  affected_provision  vn:law:2014:58-2014-qh13:article-5
+  action              đóng bảo hiểm xã hội
+  never_revisited     yes
+
+1 row
+```
+
+Every question ships with defaults you can replace one at a time, so asking about a different article does not mean retyping the rest:
+
+```sh
+luatdo graph ask --question 16 --param date=2023-01-01
+luatdo graph query --question 16   # the Cypher it just ran, to edit and paste
+```
+
+The queries are in the export directory too, under `queries/`, so a dump answers these on a machine that has never seen this repository.
+Open http://localhost:7474, drop `style.grass` on the window, and paste one in:
 
 ```cypher
 // Amendment history of the 2019 Labor Code
@@ -105,7 +136,8 @@ RETURN path
 | `luatdo prompt` | Print the exact prompt for a provision without calling a model |
 | `luatdo review` | Work the human review queue for gated statements |
 | `luatdo build` | Assemble verified statements into the trusted store |
-| `luatdo export neo4j` | Project the trusted store into Neo4j, full import or incremental merge |
+| `luatdo export neo4j` | Project the trusted store into Neo4j, full import or incremental merge, scoped to a campaign |
+| `luatdo graph` | Ask the projected graph one of the twenty three competency questions |
 | `luatdo coverage` | Report what is parsed, extracted, verified, and exported, recomputed from disk |
 | `luatdo run` | The campaign: work the coverage queue with parallel workers until it is empty |
 | `luatdo campaign` | Scope a named campaign and report what it has covered |
@@ -574,6 +606,21 @@ A prompt shown only by its own new number is indistinguishable from a prompt tha
 
 `eval gates` is the same code the export path runs, so a campaign that fails it cannot ship by accident.
 `--force` exports anyway and says in as many words that the graph is not one to publish numbers from.
+
+The same flag scopes the dump as well as the gates:
+
+```sh
+luatdo export neo4j --campaign labour-2025
+```
+
+The whole corpus is not the unit anybody works with.
+A campaign dump holds the documents in scope and nothing that points outside them: the citations with one end elsewhere are gone, so are the term uses scoped to an excluded instrument, the concepts nothing left reaches, and the amendment events whose every effect landed outside.
+That last part is not tidiness. `neo4j-admin` refuses an entire import over a single relationship row naming a node the node files do not declare, so an edge half in the dump is not a smaller edge, it is a dump that will not load.
+
+There are two ways into a database and they are checked against each other rather than trusted separately.
+`import.sh` and `import.cmd` run `neo4j-admin` over the CSV files, which is the fast path for a fresh database and wants the dump directory to be writable because the importer leaves its report there.
+`--merge` writes the same projection over Bolt into a database that is already running, and `--check` counts what is there against what the store says should be there and names every counter that disagrees.
+On the labour campaign the two paths land on the same graph, 136289 nodes and 144093 relationships, the offline one in 12 seconds and the incremental one in about two minutes.
 
 The baselines are the two systems this project would have to beat to be worth building: a search index with a citation table, and flat triple extraction over the same scope.
 Both answer 2 of the 23 competency questions from a layer that means what it says.

@@ -13,6 +13,7 @@ import (
 	"github.com/tamnd/luatdo/concept"
 	"github.com/tamnd/luatdo/law"
 	"github.com/tamnd/luatdo/norm"
+	"github.com/tamnd/luatdo/ontology"
 	"github.com/tamnd/luatdo/subject"
 )
 
@@ -251,7 +252,11 @@ func TestExportNorms(t *testing.T) {
 		OntologyVersion: 1,
 	}}
 	dir := t.TempDir()
-	if err := Export(dir, Input{Docs: docs, Links: links, Statements: statements}); err != nil {
+	// The registry is part of the input because the participant edges point into
+	// it. Exporting the statements without it writes a HAS_BEARER row naming a
+	// node the import does not contain, which stops the whole import.
+	in := Input{Docs: docs, Links: links, Statements: statements, Registry: ontology.Seed()}
+	if err := Export(dir, in); err != nil {
 		t.Fatalf("Export: %v", err)
 	}
 
@@ -313,9 +318,35 @@ func TestExportNorms(t *testing.T) {
 		}
 	}
 
-	s := Summarize(Input{Docs: docs, Links: links, Statements: statements})
+	s := Summarize(in)
 	if s.Norms != 1 {
 		t.Errorf("Summarize norms = %d", s.Norms)
+	}
+	// The count is what the drift check compares a live database against, so it
+	// has to be every norm edge row the export wrote, across both files.
+	if written := len(edges) - 1 + len(hasNorm) - 1; s.NormEdges != written {
+		t.Errorf("Summarize norm edges = %d, the two files hold %d rows", s.NormEdges, written)
+	}
+	if s.NormEdges != 7 {
+		t.Errorf("Summarize norm edges = %d, want the two participants, the two provision edges, and the three details", s.NormEdges)
+	}
+
+	// A participant placed in a class this export does not write is dropped
+	// rather than pointed at nothing. It costs that one edge, where naming a
+	// missing node costs the import.
+	statements[0].Statement.Bearer.ClassID = "vn-legal:NoSuchClass"
+	other := t.TempDir()
+	stale := Input{Docs: docs, Links: links, Statements: statements, Registry: ontology.Seed()}
+	if err := Export(other, stale); err != nil {
+		t.Fatalf("Export: %v", err)
+	}
+	for _, e := range readCSV(t, filepath.Join(other, "norm_edges.csv"))[1:] {
+		if e[2] == "HAS_BEARER" {
+			t.Errorf("edge %v points at a class the registry does not hold", e)
+		}
+	}
+	if got := Summarize(stale).NormEdges; got != 6 {
+		t.Errorf("Summarize norm edges = %d after dropping one, want 6", got)
 	}
 }
 
@@ -510,5 +541,79 @@ func TestNoEdgeLeavesATermUseForANodeTheExportNeverWrote(t *testing.T) {
 	}
 	if s := Summarize(Input{Docs: docs, Links: links, Layer: layer}); s.TermUses != 4 || s.MergedConcepts != 1 || s.TermUseEdges != len(edges)-1 {
 		t.Errorf("summary = %+v, want the counts the files carry", s)
+	}
+}
+
+// A document that numbers two things the same way is ordinary in this corpus.
+// A decision promulgates a regulation attached to it and both print Điều 1, and
+// an amending decree restates clause 1 of article 1 of every instrument it
+// touches. The identifier is built from the numbering, so both readings land on
+// the same one.
+func TestADocumentThatUsesOneIdentifierTwiceIsWrittenOnce(t *testing.T) {
+	doc := &law.Document{
+		ID: "vn:law:1997:402-1997-qd-nhnn1", OfficialNumber: "402/1997/QĐ-NHNN1",
+		Title: "Quyết định ban hành Thể lệ tín dụng", DocType: "decision", Status: "parsed",
+		Provisions: []law.Provision{
+			{ID: "vn:law:1997:402-1997-qd-nhnn1:article-1", Kind: "article", Number: "1",
+				Text: "Ban hành kèm theo Quyết định này Thể lệ tín dụng.", TextHash: "aaa1", Position: 1},
+			// The attached regulation, numbered from one again, and hanging under a
+			// different parent than the article it collides with.
+			{ID: "vn:law:1997:402-1997-qd-nhnn1:chapter-1", Kind: "chapter", Number: "1", Heading: "Quy định chung", Position: 2},
+			{ID: "vn:law:1997:402-1997-qd-nhnn1:article-1", ParentID: "vn:law:1997:402-1997-qd-nhnn1:chapter-1",
+				Kind: "article", Number: "1", Text: "Đối tượng áp dụng của Thể lệ này là các Ngân hàng thương mại.",
+				TextHash: "bbb2", Position: 3},
+		},
+	}
+	in := Input{Docs: []*law.Document{doc}}
+	dir := t.TempDir()
+	if err := Export(dir, in); err != nil {
+		t.Fatalf("Export: %v", err)
+	}
+
+	// neo4j-admin refuses the whole import over a repeated id:ID rather than
+	// keeping one of them, so this is the difference between a graph and an
+	// error message.
+	seen := map[string]bool{}
+	components := readCSV(t, filepath.Join(dir, "components.csv"))
+	for _, r := range components[1:] {
+		if seen[r[0]] {
+			t.Errorf("components.csv declares %s twice, which stops the import", r[0])
+		}
+		seen[r[0]] = true
+	}
+	if len(components)-1 != 2 {
+		t.Errorf("components.csv rows = %d, want the chapter and one article", len(components)-1)
+	}
+
+	// The edge follows the component that survived, so the second reading's
+	// container does not point at a node the node file left out.
+	for _, r := range readCSV(t, filepath.Join(dir, "contains.csv"))[1:] {
+		if !seen[r[1]] {
+			t.Errorf("contains.csv puts %s in %s and no such component was written", r[1], r[0])
+		}
+	}
+
+	// Both texts survive as versions, because the version identifier carries the
+	// text hash and two readings that say different things are two readings.
+	if versions := readCSV(t, filepath.Join(dir, "text_versions.csv")); len(versions)-1 != 2 {
+		t.Errorf("text_versions.csv rows = %d, want both readings kept", len(versions)-1)
+	}
+
+	s := Summarize(in)
+	if s.Components != 2 || s.Contains != 2 {
+		t.Errorf("summary components %d contains %d, want 2 and 2", s.Components, s.Contains)
+	}
+	// The fold is reported rather than absorbed. A count that quietly drops a
+	// provision reads exactly like a corpus that never had it.
+	if s.FoldedComponents != 1 || s.FoldedVersions != 0 {
+		t.Errorf("folded %d components and %d versions, want 1 and 0", s.FoldedComponents, s.FoldedVersions)
+	}
+	if !strings.Contains(s.String(), "folded 1 components and 0 versions") {
+		t.Errorf("summary reads %q and says nothing about the fold", s.String())
+	}
+	// A folded component is not drift. The database holds what the projection
+	// wrote, and the projection wrote two.
+	if lines := Drift(s, liveCounts(s)); len(lines) != 0 {
+		t.Errorf("drift = %v, want none, the folded component was never written", lines)
 	}
 }

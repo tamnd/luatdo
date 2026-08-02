@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/neo4j/neo4j-go-driver/v5/neo4j"
 
@@ -31,6 +32,11 @@ var counters = []struct {
 	{"concepts", "MATCH (c:LegalConcept) RETURN count(c) AS n", func(s Summary) int { return s.Concepts }},
 	{"subjects", "MATCH (s:Subject) RETURN count(s) AS n", func(s Summary) int { return s.Subjects }},
 	{"norms", "MATCH (n:Norm) RETURN count(n) AS n", func(s Summary) int { return s.Norms }},
+	// The norm edges are counted because the merge matches both endpoints by
+	// label, and a label that is right for the fixture and wrong for the corpus
+	// writes the nodes, finds nothing to attach them to, and reports success. A
+	// count of the nodes alone cannot tell that apart from a graph that works.
+	{"norm_edges", "MATCH ()-[r:HAS_NORM|HAS_LEGAL_BASIS|HAS_BEARER|HAS_COUNTERPARTY|HAS_OBJECT|HAS_CONDITION|HAS_EXCEPTION|HAS_SANCTION]->() RETURN count(r) AS n", func(s Summary) int { return s.NormEdges }},
 	{"contains", "MATCH ()-[r:CONTAINS]->() RETURN count(r) AS n", func(s Summary) int { return s.Contains }},
 	{"has_version", "MATCH ()-[r:HAS_VERSION]->() RETURN count(r) AS n", func(s Summary) int { return s.TextVersions }},
 	{"cites", "MATCH ()-[r:CITES|AMENDS]->() RETURN count(r) AS n", func(s Summary) int { return s.Cites }},
@@ -45,6 +51,15 @@ var counters = []struct {
 	// expected to hold exactly one edge per decision rather than a pair.
 	{"differs_from", "MATCH ()-[r:DIFFERS_FROM]->() RETURN count(r) AS n", func(s Summary) int { return s.DiffersFrom }},
 	{"term_use_edges", "MATCH ()-[r:DEFINES_TERM|IN_SCOPE|REFERS_TO]->() RETURN count(r) AS n", func(s Summary) int { return s.TermUseEdges }},
+	// The relation types are listed rather than matched with a wildcard, because
+	// a wildcard would also count the layer's edges under a name it does not own
+	// and report agreement while the rename that keeps them apart had silently
+	// stopped being applied.
+	{"relations", "MATCH ()-[r:" + strings.Join(RelationTypes(), "|") + "]->() RETURN count(r) AS n", func(s Summary) int { return s.Relations }},
+	{"about_concept", "MATCH ()-[r:" + AboutConcept + "]->() RETURN count(r) AS n", func(s Summary) int { return s.AboutConcept }},
+	{"events", "MATCH (e:" + EventLabel + ") RETURN count(e) AS n", func(s Summary) int { return s.Events }},
+	{"temporal_versions", "MATCH (v:" + TemporalVersionLabel + ") RETURN count(v) AS n", func(s Summary) int { return s.TemporalVersions }},
+	{"temporal_edges", "MATCH ()-[r:" + HasTemporalVersion + "|" + Includes + "|" + CausedBy + "|" + Terminates + "|" + ProducesVersion + "]->() RETURN count(r) AS n", func(s Summary) int { return s.TemporalEdges }},
 }
 
 // Live counts what the database currently holds.
