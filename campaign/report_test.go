@@ -127,6 +127,51 @@ func TestAccountRefusesToPriceWhatHasNoRateCard(t *testing.T) {
 	}
 }
 
+func TestReportNamesItsOwnDefectsWithTheirNumbers(t *testing.T) {
+	records := []norm.Record{
+		record(norm.StatusVerified, "duty", func(s *norm.Statement) {
+			s.Deadline = &norm.Deadline{Text: "trong thời hạn hợp lý"}
+			norm.Normalize(s)
+		}),
+	}
+	r := Compile(scope(), map[string]bool{code: true}, nil, nil, records, nil, nil)
+	out := r.String()
+	if !strings.Contains(out, "unparsed-deadlines") || !strings.Contains(out, "no-concept-layer") {
+		t.Errorf("a report over records with an unreadable deadline and no concept links knows two things are wrong:\n%s", out)
+	}
+	if !strings.Contains(out, "1 of 1 deadline phrases") {
+		t.Errorf("a defect without its numbers is a sentence nobody can check:\n%s", out)
+	}
+}
+
+func TestReportSaysAnEmptyDefectsSectionIsNotACleanBillOfHealth(t *testing.T) {
+	clean := record(norm.StatusVerified, "duty", func(s *norm.Statement) {
+		s.Bearer.ConceptID = "vn:concept:nguoi-su-dung-lao-dong"
+		s.Action.ConceptID = "vn:concept:tra-luong"
+	})
+	r := Compile(scope(), map[string]bool{code: true}, nil, nil, []norm.Record{clean}, nil, nil)
+	if len(r.Defects) != 0 {
+		t.Fatalf("defects = %+v, nothing this report checks is wrong with that record", r.Defects)
+	}
+	if !strings.Contains(r.String(), "which is not the same as none") {
+		t.Errorf("silence about defects reads as an absence of them:\n%s", r.String())
+	}
+}
+
+func TestReportCountsAStatementTooBrokenToJudgeApartFromOneTheJudgeRejected(t *testing.T) {
+	records := []norm.Record{
+		record(norm.StatusRejected, "duty", nil),
+		record(norm.StatusInvalid, "duty", nil),
+	}
+	r := Compile(scope(), map[string]bool{code: true}, nil, nil, records, nil, nil)
+	if r.Rejected != 1 || r.Invalid != 1 {
+		t.Errorf("report = %+v, a statement the validator threw out never reached the judge", r)
+	}
+	if !strings.Contains(r.String(), "1 never valid enough to judge") {
+		t.Errorf("folding those two together flatters the judge:\n%s", r.String())
+	}
+}
+
 func TestReportSaysHowManyReferencesTheConceptLayerCouldHavePlaced(t *testing.T) {
 	linked := record(norm.StatusVerified, "duty", func(s *norm.Statement) {
 		s.Bearer.ConceptID = "vn:concept:nguoi-su-dung-lao-dong"

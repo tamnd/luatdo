@@ -30,6 +30,7 @@ type Report struct {
 	Verified   int            `json:"verified"`
 	Approved   int            `json:"approved"`
 	Rejected   int            `json:"rejected"`
+	Invalid    int            `json:"invalid"`
 	ByType     map[string]int `json:"by_type"`
 
 	Bearers    int `json:"bearers"`    // statements naming a bearer
@@ -56,6 +57,61 @@ type Report struct {
 	Calls  int    `json:"calls"`
 	Tokens int    `json:"tokens"`
 	Cost   string `json:"cost"`
+
+	Defects []Defect `json:"defects"`
+}
+
+// Defect is one thing known to be wrong with this campaign's output.
+//
+// The section exists because a report of a pass over real law will always have
+// one, and a report with an empty defects section is either new or not looking.
+// Most of these are derived from the report's own counts rather than typed in
+// by a person, for the ordinary reason that a section somebody has to remember
+// to fill in is a section that stops being filled in around the third campaign.
+type Defect struct {
+	Name   string `json:"name"`
+	Detail string `json:"detail"`
+}
+
+// Note adds a defect the caller measured elsewhere, such as the state of the
+// judge validation, which lives in the eval store rather than in these records.
+func (r *Report) Note(name, detail string) {
+	r.Defects = append(r.Defects, Defect{Name: name, Detail: detail})
+}
+
+// defects derives what the counts already show. Each one is a statement about
+// this campaign with its own numbers attached, because "some deadlines did not
+// parse" is a sentence a reader can neither act on nor check.
+func (r *Report) defects(trusted []norm.Record) {
+	if groups := norm.NearDuplicates(trusted); len(groups) > 0 {
+		n := 0
+		for _, g := range groups {
+			n += len(g)
+		}
+		r.Note("duplicate-statements", fmt.Sprintf(
+			"%d of %d trusted statements fall into %d groups that make the same claim and differ only in how the bearer is worded, and the graph answers with all of them",
+			n, len(trusted), len(groups)))
+	}
+	if r.Deadlines > r.Parsed {
+		r.Note("unparsed-deadlines", fmt.Sprintf(
+			"%d of %d deadline phrases carry no length or date this grammar can read, so question 12 answers over %d of them",
+			r.Deadlines-r.Parsed, r.Deadlines, r.Parsed))
+	}
+	if r.References > 0 && r.Conceptual == 0 {
+		r.Note("no-concept-layer", fmt.Sprintf(
+			"none of the %d references resolved to a concept, so every question that turns on a concept is answered from surface strings",
+			r.References))
+	}
+	if r.Bearers > r.Placed {
+		r.Note("unplaced-bearers", fmt.Sprintf(
+			"%d of %d named bearers sit outside the registry, so a query by class misses them",
+			r.Bearers-r.Placed, r.Bearers))
+	}
+	if r.Sanctions.Unresolved > 0 {
+		r.Note("unreadable-sanction-basis", fmt.Sprintf(
+			"%d sanction bases could not be read as a citation at all, which is a parse failure rather than a gap in the corpus",
+			r.Sanctions.Unresolved))
+	}
 }
 
 // Compile builds the report from the records of one campaign's documents.
@@ -64,6 +120,11 @@ type Report struct {
 // their verdict, except the four query lines at the bottom, which are counted
 // over the trusted ones. A report that counted rejected statements into the
 // answers would be describing a graph nobody would query.
+//
+// Which means records has to be every record, not the trusted store. Handing
+// this function the trusted store alone produces a report that says nothing was
+// rejected, and a hundred percent acceptance rate is the most flattering number
+// this project can print and the least true.
 func Compile(sc Scope, docs map[string]bool, extractable, extracted map[string]int, records []norm.Record, procedures []norm.Procedure, index map[string]string) Report {
 	r := Report{Scope: sc, Documents: len(docs), ByType: map[string]int{}}
 	for id := range docs {
@@ -87,6 +148,8 @@ func Compile(sc Scope, docs map[string]bool, extractable, extracted map[string]i
 			r.Verified++
 		case norm.StatusApproved:
 			r.Approved++
+		case norm.StatusInvalid:
+			r.Invalid++
 		default:
 			r.Rejected++
 		}
@@ -134,6 +197,7 @@ func Compile(sc Scope, docs map[string]bool, extractable, extracted map[string]i
 	r.Unsanctioned = len(norm.Unsanctioned(trusted))
 	r.Unbearing = len(norm.AskQuestion10(trusted, nil).Rows)
 	r.Dangling = len(norm.AskQuestion15(trusted, nil).Rows)
+	r.defects(trusted)
 	return r
 }
 
@@ -188,8 +252,8 @@ func (r Report) String() string {
 		r.Documents, r.Reached, r.Documents-r.Reached)
 	fmt.Fprintf(&b, "provisions     %d extractable, %d extracted, %d left in the queue\n",
 		r.Extractable, r.Extracted, r.Extractable-r.Extracted)
-	fmt.Fprintf(&b, "statements     %d, %d verified by the judge, %d kept by a person, %d rejected\n",
-		r.Statements, r.Verified, r.Approved, r.Rejected)
+	fmt.Fprintf(&b, "statements     %d proposed, %d verified by the judge, %d kept by a person, %d rejected, %d never valid enough to judge\n",
+		r.Statements, r.Verified, r.Approved, r.Rejected, r.Invalid)
 	types := make([]string, 0, len(r.ByType))
 	for t := range r.ByType {
 		types = append(types, t)
@@ -209,5 +273,13 @@ func (r Report) String() string {
 		r.Unsanctioned, r.Unbearing, r.Dangling)
 	fmt.Fprintf(&b, "model          %d calls in scope, over %d runs against this store spending %d tokens, cost %s\n",
 		r.Calls, r.Runs, r.Tokens, r.Cost)
+	if len(r.Defects) == 0 {
+		fmt.Fprintf(&b, "known defects  none of the checks in this report found one, which is not the same as none\n")
+		return b.String()
+	}
+	fmt.Fprintf(&b, "known defects  %d\n", len(r.Defects))
+	for _, d := range r.Defects {
+		fmt.Fprintf(&b, "               %s\n                 %s\n", d.Name, d.Detail)
+	}
 	return b.String()
 }

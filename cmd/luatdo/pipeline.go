@@ -359,6 +359,8 @@ func cmdExport(args []string) error {
 	dataDir := fs.String("data", "", "data directory")
 	merge := fs.Bool("merge", false, "merge incrementally over Bolt instead of writing CSVs")
 	check := fs.Bool("check", false, "compare the live database against the store and report drift")
+	scope := fs.String("campaign", "", "run the release gates over a named campaign before exporting")
+	force := fs.Bool("force", false, "export even though the release gates failed, and say so in the output")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -391,6 +393,25 @@ func cmdExport(args []string) error {
 	_ = store.ReadJSON(filepath.Join(s.Trusted(), "statements.json"), &in.Statements)
 	in.Layer, _ = concept.ReadLayer(s.Concepts())
 	summary := graph.Summarize(in)
+
+	// The release gates sit on the road out. A checklist beside the road is
+	// worked by whoever is shipping, at the moment they most want to ship, and
+	// the export is the last point where a campaign that should not leave the
+	// building still has not left it. A check run reads the live database and
+	// changes nothing, so it is not gated.
+	if !*check {
+		v, err := gateVerdict(s, *scope)
+		if err != nil {
+			return err
+		}
+		if ok, reasons := v.Ship(); !ok {
+			fmt.Print(v)
+			if !*force {
+				return fmt.Errorf("release gates failed on %d of %d checks, rerun with --force to export anyway", len(reasons), len(v.Results))
+			}
+			fmt.Println("exporting anyway because --force was passed, and this graph is not one to publish numbers from")
+		}
+	}
 	if *check {
 		counts, err := graph.Live(context.Background(), graph.TargetFromEnv())
 		if err != nil {

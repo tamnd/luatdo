@@ -109,6 +109,7 @@ RETURN path
 | `luatdo coverage` | Report what is parsed, extracted, verified, and exported, recomputed from disk |
 | `luatdo run` | The campaign: work the coverage queue with parallel workers until it is empty |
 | `luatdo campaign` | Scope a named campaign and report what it has covered |
+| `luatdo eval` | Run the metric suite, validate the judge, and check the release gates |
 | `luatdo doctor` | Probe model routes and report which are alive, and what the store holds |
 
 Identifiers are structural and reproducible, never generated:
@@ -520,6 +521,64 @@ The 2,119 provincial documents it drops are two thirds of the subject by count a
 That is a statement about what the pass is for, and it is in the scope definition where a reader can argue with it.
 
 The report leads with what the campaign has not reached, because a report that opens with the number of statements extracted invites the reader to take that as the number of statements in the corpus.
+
+It ends with a known defects section, and that section is derived from the report's own counts rather than typed in by whoever is writing the summary.
+A defect somebody has to remember to record is a defect that stops being recorded around the third campaign.
+
+```text
+statements     597 proposed, 359 verified by the judge, 0 kept by a person, 110 rejected, 128 never valid enough to judge
+concepts       0 of 1798 references resolved to a concept
+deadlines      49 phrases, 31 taken apart, 0 shorter than five working days
+known defects  5
+               unparsed-deadlines
+                 18 of 49 deadline phrases carry no length or date this grammar can read, so question 12 answers over 31 of them
+               no-concept-layer
+                 none of the 1798 references resolved to a concept, so every question that turns on a concept is answered from surface strings
+               judge-below-the-gate
+                 the judge agrees with a person at kappa -0.120 over 50 labelled items against a floor of 0.400 over 50, so the verdicts above are not evidence of precision
+```
+
+The report counts every statement the pass proposed, not the ones that survived it.
+Compiled from the trusted store alone it would report that a hundred percent of statements were accepted, which is the most flattering number this project can print and the least true.
+
+## Measuring it
+
+Everything above this line is a claim about a corpus, and a claim about a corpus needs an instrument.
+The instrument here is a language model judging whether a statement follows from a provision, so the first thing worth measuring is the judge.
+
+```sh
+luatdo eval suite                # one table per layer, every number with its sample
+luatdo eval judge sample         # draw a blind sample, half of it from the gate's rejections
+luatdo eval judge score          # score the labels a person filled in
+luatdo eval gates labour-2025    # the release gates, which the export path also runs
+luatdo eval baselines            # the 23 questions against two simpler systems
+luatdo eval ablations            # the 23 questions with one layer removed at a time
+```
+
+`judge sample` writes the provision window and the proposed statement and withholds the verdict, which is in a second file.
+Half the sample is drawn from statements the gate rejected, because a sample drawn from what a gate accepted measures the accepted half of its behaviour and nothing else.
+A rejection that a person reads as correct is a correct statement the gate deleted, and that is the failure mode worth paying for.
+
+Agreement is reported as raw agreement and Cohen's kappa together, with the Landis and Koch bands named as the convention they are.
+When one label takes most of the sample the report says so in the line below the numbers.
+That case is not a footnote here, it is the ordinary case: a gate that accepts nine statements in ten produces a set where raw agreement reads high and kappa reads near zero at the same time, and printing either one alone is arguing for a conclusion.
+
+```text
+agreement     raw 0.880 (44 of 50), kappa -0.034 (worse than chance)
+              98% of the answers carry one label, so raw agreement reads high and kappa reads low, and neither number stands alone here
+```
+
+`judge rejudge` runs today's judge over the same sampled statements and writes its verdicts beside the original key rather than over it.
+The labels stay where they are, `judge score` prints both keys under them, and it prints how many items moved and in which direction.
+A prompt shown only by its own new number is indistinguishable from a prompt that was tuned until the number came out.
+
+`eval gates` is the same code the export path runs, so a campaign that fails it cannot ship by accident.
+`--force` exports anyway and says in as many words that the graph is not one to publish numbers from.
+
+The baselines are the two systems this project would have to beat to be worth building: a search index with a citation table, and flat triple extraction over the same scope.
+Both answer 2 of the 23 competency questions from a layer that means what it says.
+The ablations remove one layer at a time from the full system, and the concept layer is worth 14 questions, the temporal layer 7, and conditions and exceptions 3.
+Those are counts of questions the design can answer, not of answers checked against a gold set, and the report says which it is.
 
 ## Where the models come from
 
