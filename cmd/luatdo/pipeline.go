@@ -106,7 +106,7 @@ func cmdParse(args []string) error {
 	}
 
 	only := fs.Arg(0)
-	parsed, quarantined, metadata, skipped := 0, 0, 0, 0
+	parsed, quarantined, metadata, skipped, merged := 0, 0, 0, 0, 0
 	write := func(in parse.Input) error {
 		doc, err := parse.Parse(in)
 		if err != nil {
@@ -130,7 +130,18 @@ func cmdParse(args []string) error {
 		default:
 			parsed++
 		}
-		return store.WriteJSON(filepath.Join(s.Docs(), law.FileName(doc.ID)), doc)
+		// The same instrument is published in more than one dataset and the
+		// publications do not carry the same fields, so what is already on disk
+		// fills what this parse leaves empty rather than being overwritten by it.
+		path := filepath.Join(s.Docs(), law.FileName(doc.ID))
+		var existing law.Document
+		if err := store.ReadJSON(path, &existing); err == nil {
+			merged++
+			doc = parse.Merge(&existing, doc)
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+		return store.WriteJSON(path, doc)
 	}
 
 	switch *dataset {
@@ -157,6 +168,9 @@ func cmdParse(args []string) error {
 	}
 	fmt.Printf("parse: %d parsed, %d quarantined, %d metadata only, %d without a usable official number\n",
 		parsed, quarantined, metadata, skipped)
+	if merged > 0 {
+		fmt.Printf("parse: %d documents another dataset had already published, merged field by field rather than overwritten\n", merged)
+	}
 	return nil
 }
 

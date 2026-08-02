@@ -51,6 +51,10 @@ A document whose text has not been downloaded is marked text pending rather than
 The 171,556 metadata rows are not 171,556 documents, and `luatdo parse` says what it did with every row it did not take: numbers with no year and so no stable identifier, local numbers with no issuing body, English translations that carry the number of the document they translate, and rows that duplicate a document already taken.
 What comes out is about 128,000 documents.
 
+The two datasets overlap and they do not carry the same fields, so an instrument published in both is merged field by field rather than overwritten by whichever pass ran last.
+UTS_VLC is cleaned text with no dates in it at all and th1nhng0 carries the commencement date from vbpl.vn, and a parse that let the later run win threw one of those away depending on the order the datasets were fetched in.
+The incoming parse wins every field it fills and the record already on disk supplies every field it leaves empty, so the clean text and the date both survive.
+
 ## Quick start
 
 ```sh
@@ -372,6 +376,19 @@ vn:law:2025:72-2025-nd-cp:article-7 has 2 versions
 
 Question 16 prints what a component said on two dates and every event between them, and question 17 lists versions that were in force for less than a given number of days before being replaced.
 Question 17 currently returns nothing, which is the honest answer for a graph built from a single amending instrument rather than evidence that no provision in Vietnamese law is short lived.
+
+A norm, a defined term and a relation edge are readings of particular words rather than of a component, so each of them inherits the interval of the wording it was read from.
+`luatdo temporal stamp` writes that interval to a sidecar, and it says on every one of them where the interval came from, because three quite different answers would otherwise look identical.
+A `version_graph` interval has both ends read.
+A `commencement` interval starts the day the document took effect and is open, because nothing in the citation graph says the component was ever amended.
+A `commencement_amended` interval starts the same way and its end is unknown rather than open, because something did amend that document and nobody has read it yet, and a record with that source answers no when asked whether it is in force on a date.
+Saying no there is the awkward answer and it is the right one: this layer would rather report that it does not know than report a wording as current when an unread amendment may have replaced it.
+
+The sidecar is a sidecar rather than a field written back into the norm, term and relation stores, for the same reason Neo4j is a projection.
+Those stores are what the extraction passes produced, the interval is derived, and a derived value written into a source file cannot be told apart later from something a model said.
+
+On the store today that is 2,559 intervals over 2,565 readings, 255 of them open and 2,304 with an end nobody has read yet.
+The six with no interval at all are readings of the 2013 Constitution, which neither dataset gives a commencement date, and the honest answer there is to leave the field empty rather than type in the date everybody knows.
 
 ## What a document is about
 

@@ -5,9 +5,13 @@ import (
 	"testing"
 
 	"github.com/tamnd/luatdo/cite"
+	"github.com/tamnd/luatdo/extract"
 	"github.com/tamnd/luatdo/law"
+	"github.com/tamnd/luatdo/norm"
+	"github.com/tamnd/luatdo/relation"
 	"github.com/tamnd/luatdo/store"
 	"github.com/tamnd/luatdo/temporal"
+	"github.com/tamnd/luatdo/term"
 )
 
 func TestAmendingWordsFiltersInFrontOfTheModel(t *testing.T) {
@@ -162,5 +166,67 @@ func TestRefusedDocsCountsDocumentsNotReasons(t *testing.T) {
 	}}
 	if got := refusedDocs(layer); got != 2 {
 		t.Errorf("refusedDocs = %d, want the two documents that were refused", got)
+	}
+}
+
+func TestCollectReadingsTakesVerifiedNormsAndEveryPieceOfEvidence(t *testing.T) {
+	dir := t.TempDir()
+	s, err := store.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := extract.NormJob{ProvisionID: "p1", DocID: "d1", Records: []norm.Record{
+		{ID: "n1", DocID: "d1", ProvisionID: "p1", Status: "verified"},
+		// A rejected statement is nobody's assertion, so dating it would be
+		// dating something that is not there.
+		{ID: "n2", DocID: "d1", ProvisionID: "p1", Status: "rejected"},
+	}}
+	if err := store.WriteJSON(filepath.Join(s.Norms(), "d1.json"), job); err != nil {
+		t.Fatalf("WriteJSON: %v", err)
+	}
+	defs := []term.Definition{{TermID: "vn:term:x", ProvisionID: "p2", DocID: "d1"}}
+	if err := store.WriteJSON(filepath.Join(s.Terms(), "d1.json"), defs); err != nil {
+		t.Fatalf("WriteJSON: %v", err)
+	}
+	edges := []relation.Edge{{FromID: "a", ToID: "b", Type: "requires", Evidence: []relation.Evidence{
+		{ProvisionID: "p3"}, {ProvisionID: "p4"},
+	}}}
+	if err := relation.WriteEdges(s.Relation(), edges); err != nil {
+		t.Fatalf("WriteEdges: %v", err)
+	}
+
+	got, err := collectReadings(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := map[string]int{}
+	for _, r := range got {
+		count[r.Kind]++
+	}
+	if count[temporal.AnchorNorm] != 1 {
+		t.Errorf("one norm is verified, got %d readings for norms", count[temporal.AnchorNorm])
+	}
+	if count[temporal.AnchorTermUse] != 1 {
+		t.Errorf("one defined term, got %d", count[temporal.AnchorTermUse])
+	}
+	// An edge held up by two provisions is true for as long as either of them
+	// says so, so both are stamped rather than the first one standing for both.
+	if count[temporal.AnchorRelation] != 2 {
+		t.Errorf("two pieces of evidence, got %d readings for relation edges", count[temporal.AnchorRelation])
+	}
+}
+
+func TestCollectReadingsTreatsAMissingPassAsEmpty(t *testing.T) {
+	dir := t.TempDir()
+	s, err := store.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := collectReadings(s)
+	if err != nil {
+		t.Fatalf("a pipeline is run one pass at a time and a pass nobody has run yet is not an error: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("nothing has been extracted, got %d readings", len(got))
 	}
 }

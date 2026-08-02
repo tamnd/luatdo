@@ -601,3 +601,60 @@ func TestQuoteDepth(t *testing.T) {
 		}
 	}
 }
+
+func TestMergeKeepsTheDateOneDatasetHasAndTheTextTheOtherHas(t *testing.T) {
+	// th1nhng0 carries the commencement date and rougher text, UTS_VLC carries
+	// clean text and no date at all, and both publish this instrument.
+	breadth := &law.Document{
+		ID: "vn:law:2010:46-2010-qh12", OfficialNumber: "46/2010/QH12",
+		Title: "Luật Ngân hàng Nhà nước Việt Nam", DocType: "law",
+		EffectiveFrom: "01/01/2011", Source: "th1nhng0", Status: "parsed",
+		Provisions: []law.Provision{{ID: "vn:law:2010:46-2010-qh12:article-1", Kind: "article", Number: "1"}},
+	}
+	seed := &law.Document{
+		ID: "vn:law:2010:46-2010-qh12", OfficialNumber: "46/2010/QH12",
+		Title: "Luật Ngân hàng Nhà nước Việt Nam", DocType: "law",
+		Source: "uts_vlc", Status: "parsed",
+		Provisions: []law.Provision{
+			{ID: "vn:law:2010:46-2010-qh12:article-1", Kind: "article", Number: "1", Text: "Sạch."},
+			{ID: "vn:law:2010:46-2010-qh12:article-2", Kind: "article", Number: "2", Text: "Sạch."},
+		},
+	}
+
+	got := Merge(breadth, seed)
+	if got.EffectiveFrom != "01/01/2011" {
+		t.Errorf("the date the other dataset published is the only one there is, got %q", got.EffectiveFrom)
+	}
+	if len(got.Provisions) != 2 || got.Source != "uts_vlc" {
+		t.Errorf("the incoming publication has the text, so it keeps it: %d provisions from %q", len(got.Provisions), got.Source)
+	}
+}
+
+func TestMergeDoesNotLetAMetadataRowDemoteAParsedDocument(t *testing.T) {
+	parsed := &law.Document{
+		ID: "vn:law:2010:46-2010-qh12", Status: "parsed", Source: "uts_vlc", SourceRef: "abc",
+		Provisions: []law.Provision{{ID: "vn:law:2010:46-2010-qh12:article-1", Kind: "article", Number: "1"}},
+	}
+	metadataOnly := &law.Document{
+		ID: "vn:law:2010:46-2010-qh12", Status: "metadata", Source: "th1nhng0",
+		EffectiveFrom: "01/01/2011",
+	}
+
+	got := Merge(parsed, metadataOnly)
+	if got.Status != "parsed" || len(got.Provisions) != 1 {
+		t.Errorf("a row with no text must not take the text away, got status %q with %d provisions", got.Status, len(got.Provisions))
+	}
+	if got.EffectiveFrom != "01/01/2011" {
+		t.Errorf("it does still bring its date, got %q", got.EffectiveFrom)
+	}
+	if got.Source != "uts_vlc" || got.SourceRef != "abc" {
+		t.Errorf("the source is whoever the text came from, got %q at %q", got.Source, got.SourceRef)
+	}
+}
+
+func TestMergeOfNothingIsTheOtherOne(t *testing.T) {
+	d := &law.Document{ID: "x"}
+	if Merge(nil, d) != d || Merge(d, nil) != d {
+		t.Error("a document with nothing to merge into comes back as it is")
+	}
+}

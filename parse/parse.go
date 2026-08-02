@@ -590,3 +590,52 @@ func (p *parser) deepest() int {
 	}
 	return -1
 }
+
+// Merge folds a document parsed from one dataset into the same document parsed
+// from another, and returns what should be on disk.
+//
+// One instrument is published in more than one place and the two publications
+// do not carry the same fields. UTS_VLC is cleaned text with no dates at all,
+// and th1nhng0 carries the commencement date from vbpl.vn and rougher text. A
+// parse that writes whichever ran last keeps one of those and throws the other
+// away, and which one it keeps depends on the order the datasets were fetched
+// in. The visible cost of that is a temporal layer that cannot date a single
+// statement read out of the seed corpus, because the dates were on disk earlier
+// in the same run and got overwritten.
+//
+// So the incoming parse wins every field it fills, and the existing record
+// supplies every field it leaves empty. Provisions are one field for this
+// purpose rather than merged clause by clause: two publications of an
+// instrument are two readings of it, and interleaving them would produce a
+// document neither publisher issued.
+func Merge(existing, incoming *law.Document) *law.Document {
+	if existing == nil {
+		return incoming
+	}
+	if incoming == nil {
+		return existing
+	}
+	out := *incoming
+	fill := func(dst *string, src string) {
+		if *dst == "" {
+			*dst = src
+		}
+	}
+	fill(&out.IssuingBody, existing.IssuingBody)
+	fill(&out.Title, existing.Title)
+	fill(&out.TitleEN, existing.TitleEN)
+	fill(&out.DocType, existing.DocType)
+	fill(&out.EffectiveFrom, existing.EffectiveFrom)
+	fill(&out.SourceURL, existing.SourceURL)
+	if len(out.Provisions) == 0 && len(existing.Provisions) > 0 {
+		// The incoming publication has no text and the one on disk does, so the
+		// text stays and the status goes back to what having text means. A
+		// metadata row must not demote a document somebody already parsed.
+		out.Provisions = existing.Provisions
+		out.Status = existing.Status
+		out.Quarantine = existing.Quarantine
+		out.Source, out.SourceRef = existing.Source, existing.SourceRef
+		out.SourceHash = existing.SourceHash
+	}
+	return &out
+}
