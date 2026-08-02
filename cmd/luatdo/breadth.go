@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"syscall"
@@ -107,15 +108,8 @@ func (b breadth) run(candidates []string, work campaign.Work) (campaign.PoolSumm
 		return summary, nil
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := drainOnSignal(os.Stderr, "draining, finishing the documents already in flight, signal again to abort")
 	defer stop()
-	go func() {
-		<-ctx.Done()
-		// Hand the signal back so a second one kills the process. The first
-		// only means stop starting documents.
-		stop()
-		fmt.Fprintln(os.Stderr, "draining, finishing the documents already in flight, signal again to abort")
-	}()
 
 	pool := &campaign.Pool{
 		Workers: workers,
@@ -129,4 +123,35 @@ func (b breadth) run(candidates []string, work campaign.Work) (campaign.PoolSumm
 	summary = pool.Run(ctx, queued, work)
 	fmt.Printf("%s: %s\n", b.name, summary)
 	return summary, nil
+}
+
+// drainOnSignal returns a context the first interrupt cancels, and the function
+// to call when the run is over.
+//
+// The obvious spelling of this is signal.NotifyContext with a deferred stop and
+// a goroutine waiting on ctx.Done, and it is wrong in a way that only shows up
+// on a run that succeeds. The deferred stop cancels the context, the goroutine
+// wakes, and a pass that read every document it was given ends by announcing
+// that it is draining because somebody signalled it. Nobody signalled it. A
+// person reading that log later has no way to tell a completed run from an
+// interrupted one, which is the only thing the line was there to say.
+//
+// So the two ways out are separate channels and the goroutine is told which of
+// them happened. The notice goes to a writer the caller names rather than to
+// os.Stderr directly, because a goroutine reading a package level variable is
+// a thing a test cannot get underneath without racing it.
+func drainOnSignal(w io.Writer, notice string) (context.Context, func()) {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-done:
+		case <-ctx.Done():
+			// Hand the signal back to the runtime so a second one kills the
+			// process. The first only means stop starting new work.
+			stop()
+			_, _ = fmt.Fprintln(w, notice)
+		}
+	}()
+	return ctx, func() { close(done); stop() }
 }

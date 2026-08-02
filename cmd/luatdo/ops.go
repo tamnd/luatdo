@@ -6,12 +6,10 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/tamnd/luatdo/api"
@@ -293,15 +291,8 @@ func cmdRun(args []string) error {
 		return err
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := drainOnSignal(os.Stderr, "draining, finishing the provisions already in flight, signal again to abort")
 	defer stop()
-	go func() {
-		<-ctx.Done()
-		// Hand the signal back to the runtime so a second one kills the
-		// process. The first one only means stop starting new work.
-		stop()
-		fmt.Fprintln(os.Stderr, "draining, finishing the provisions already in flight, signal again to abort")
-	}()
 
 	runner := &campaign.Runner{
 		Store: s, Registry: reg, Completer: eng.completer, Pricing: eng.pricing,
