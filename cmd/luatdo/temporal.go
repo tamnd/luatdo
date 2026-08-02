@@ -12,6 +12,7 @@ import (
 	"github.com/tamnd/luatdo/api"
 	"github.com/tamnd/luatdo/coverage"
 	"github.com/tamnd/luatdo/law"
+	"github.com/tamnd/luatdo/relation"
 	"github.com/tamnd/luatdo/store"
 	"github.com/tamnd/luatdo/temporal"
 )
@@ -52,10 +53,12 @@ func cmdTemporal(args []string) error {
 		return temporalCheck(dir)
 	case "verify":
 		return temporalVerify(s, dir)
+	case "stamp":
+		return temporalStamp(s, dir)
 	case "ask":
 		return temporalAsk(dir, arg(rest, 0), arg(rest, 1), *before, *date, *days)
 	default:
-		return fmt.Errorf("usage: luatdo temporal prompt|read|build|check|verify|ask")
+		return fmt.Errorf("usage: luatdo temporal prompt|read|build|check|verify|stamp|ask")
 	}
 }
 
@@ -581,4 +584,146 @@ func orOpenDate(s string) string {
 		return "now"
 	}
 	return s
+}
+
+// temporalStamp gives every record that reads a provision the validity interval
+// of the wording it reads.
+//
+// Norms, defined terms and relation edges all anchor to a component, and a
+// component outlives its wordings, so on their own they say nothing about when
+// they were true. The version graph is the only thing that knows, and it writes
+// its answer to a sidecar rather than back into the stores those records came
+// from: a derived value written into a source file cannot be told apart later
+// from something a model said.
+func temporalStamp(s *store.Store, dir string) error {
+	layer, err := temporal.ReadLayer(dir)
+	if err != nil {
+		return err
+	}
+	if len(layer.Versions) == 0 {
+		return fmt.Errorf("nothing is versioned, run luatdo temporal build first")
+	}
+	readings, err := collectReadings(s)
+	if err != nil {
+		return err
+	}
+	if len(readings) == 0 {
+		fmt.Println("no norms, defined terms or relation edges to stamp")
+		return nil
+	}
+	known, err := commencements(s)
+	if err != nil {
+		return err
+	}
+	stamped := temporal.Stamp(temporal.NewView(layer), readings, known)
+	if err := temporal.WriteValidity(dir, stamped); err != nil {
+		return err
+	}
+
+	byKind := map[string]int{}
+	for _, r := range readings {
+		byKind[r.Kind]++
+	}
+	fmt.Printf("%d readings, %d intervals\n", len(readings), len(stamped))
+	for _, k := range []string{temporal.AnchorNorm, temporal.AnchorTermUse, temporal.AnchorRelation} {
+		fmt.Printf("  %-14s %d\n", k, byKind[k])
+	}
+	by := temporal.StampCoverage(readings, stamped)
+	fmt.Printf("  %-28s %d\n", temporal.SourceVersion, by[temporal.SourceVersion])
+	fmt.Printf("  %-28s %d\n", temporal.SourceCommencement, by[temporal.SourceCommencement])
+	fmt.Printf("  %-28s %d\n", temporal.SourceCommencementAmended, by[temporal.SourceCommencementAmended])
+	fmt.Printf("  %-28s %d\n", "no interval", by["none"])
+	fmt.Println("only a version graph interval has both ends read, a commencement interval is open because no amendment to that component has been read, and a commencement_amended interval is one where something did amend the document and nobody has read it yet")
+	return nil
+}
+
+// commencements is the fallback for a document the version graph does not
+// cover: the day it took effect, and whether anything claims to amend it.
+//
+// The second half is what keeps the fallback honest. There are tens of
+// thousands of amendment edges in the citation graph and a handful of them have
+// been read, so a document with an unread amendment gets an interval that says
+// its end is unknown rather than one that says it never ended.
+func commencements(s *store.Store) (map[string]temporal.Commencement, error) {
+	docs, err := loadDocs(s)
+	if err != nil {
+		return nil, err
+	}
+	amended, err := amendingLinks(s)
+	if err != nil {
+		return nil, err
+	}
+	touched := map[string]bool{}
+	for _, targets := range amended {
+		for _, t := range targets {
+			touched[t] = true
+		}
+	}
+	out := make(map[string]temporal.Commencement, len(docs))
+	for _, d := range docs {
+		from := law.ISODate(d.EffectiveFrom)
+		if from == "" {
+			// A document with no commencement anybody recorded gets no interval.
+			// The alternative is dating it from its issue date, which is a
+			// different fact wearing the same field name.
+			continue
+		}
+		out[d.ID] = temporal.Commencement{From: from, Amended: touched[d.ID]}
+	}
+	return out, nil
+}
+
+// collectReadings gathers every record that is a reading of particular words.
+// A store that does not exist yet contributes nothing, because a pipeline is
+// run one pass at a time and a missing pass is not an error here.
+func collectReadings(s *store.Store) ([]temporal.Reading, error) {
+	var out []temporal.Reading
+
+	jobs, err := loadNormJobs(s)
+	if err != nil && !os.IsNotExist(err) {
+		return nil, err
+	}
+	for _, j := range jobs {
+		for _, r := range j.Records {
+			// A rejected statement is not a fact, so dating it would be dating
+			// something nobody is asserting.
+			if r.Status != "verified" {
+				continue
+			}
+			out = append(out, temporal.Reading{
+				Kind: temporal.AnchorNorm, RecordID: r.ID, DocID: r.DocID, ProvisionID: r.ProvisionID,
+			})
+		}
+	}
+
+	defs, err := loadDefinitions(s)
+	if err != nil && !os.IsNotExist(err) {
+		return nil, err
+	}
+	for _, d := range defs {
+		out = append(out, temporal.Reading{
+			Kind: temporal.AnchorTermUse, RecordID: d.TermID + "@" + d.ProvisionID,
+			DocID: d.DocID, ProvisionID: d.ProvisionID,
+		})
+	}
+
+	edges, err := relation.ReadEdges(s.Relation())
+	if err != nil && !os.IsNotExist(err) {
+		return nil, err
+	}
+	for _, e := range edges {
+		// An edge held up by two provisions is true for as long as either of
+		// them says so, so both are stamped rather than the first standing in
+		// for the rest.
+		for _, ev := range e.Evidence {
+			if ev.ProvisionID == "" {
+				continue
+			}
+			out = append(out, temporal.Reading{
+				Kind: temporal.AnchorRelation, RecordID: e.Key() + "@" + ev.ProvisionID,
+				DocID: ev.DocID, ProvisionID: ev.ProvisionID,
+			})
+		}
+	}
+	return out, nil
 }

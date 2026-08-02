@@ -32,6 +32,12 @@ const (
 	// the review queue and it is never empty on a real corpus.
 	QuarantineFile = "quarantined.jsonl"
 	SummaryFile    = "summary.json"
+	// ValidityFile holds the interval of every record that reads a provision. It
+	// is a sidecar rather than a field written back into the norm, term and
+	// relation stores, because those stores are what the extraction passes
+	// produced and the version graph is derived: a derived value written into a
+	// source file cannot be told from something a model said.
+	ValidityFile = "validity.jsonl"
 )
 
 // OperationPath is where one instrument's read operations live.
@@ -115,6 +121,16 @@ func ReadLayer(dir string) (*Layer, error) {
 		return nil, err
 	}
 	return &Layer{Events: events, Versions: versions, Quarantined: quarantined}, nil
+}
+
+// WriteValidity replaces the validity sidecar.
+func WriteValidity(dir string, rows []Validity) error {
+	return replaceJSONL(dir, ValidityFile, rows)
+}
+
+// ReadValidity loads the validity sidecar, empty when nothing has been stamped.
+func ReadValidity(dir string) ([]Validity, error) {
+	return readJSONL[Validity](filepath.Join(dir, ValidityFile))
 }
 
 // Summary is what one temporal run produced, for coverage.
