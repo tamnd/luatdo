@@ -55,15 +55,45 @@ type wireStatements struct {
 func (r *NormRunner) Instructions() string {
 	var b strings.Builder
 	b.WriteString("Bạn trích xuất các quy phạm pháp luật từ một điều khoản luật Việt Nam.\n")
-	b.WriteString("Mỗi quy phạm là một phát biểu đầy đủ: chủ thể, hành vi, đối tượng, điều kiện, ngoại lệ, thời hạn, chế tài nếu có.\n")
-	b.WriteString("Các loại phát biểu hợp lệ: " + strings.Join(norm.Types, ", ") + ".\n")
+	b.WriteString("Mỗi quy phạm là một phát biểu đầy đủ: bên mang nghĩa vụ, bên đối tác, hành vi, đối tượng, điều kiện, ngoại lệ, thời hạn, chế tài nếu có.\n")
+	b.WriteString("Các loại phát biểu hợp lệ: " + strings.Join(norm.Types, ", ") + ".\n\n")
+
+	b.WriteString("bearer là bên phải làm, được làm hoặc bị cấm. counterparty là bên còn lại của quan hệ, ví dụ bên được thông báo hoặc bên nhận tiền.\n")
+	b.WriteString("Trong câu \"Bên A phải thông báo cho bên B\" thì bearer là bên A và counterparty là bên B.\n")
+	b.WriteString("Đặt is_actor bằng true cho mọi tham chiếu chỉ một chủ thể pháp lý, kể cả khi chủ thể đó nằm ở vị trí đối tượng. Đặt false cho tài liệu, tiền, thời hạn và mọi thứ không phải chủ thể.\n")
+	b.WriteString("Không có bên mang nghĩa vụ nào được nêu trong điều khoản thì để trống bearer, không suy ra từ điều khác.\n\n")
+
+	// The được rule. This is one word and it is three different things, and
+	// getting it wrong turns a worker's right into an employer's permission,
+	// which is the single most consequential error this pass can make.
+	b.WriteString("Chú ý chữ \"được\". Nó có ba nghĩa khác nhau:\n")
+	b.WriteString("- \"được quyền\" và \"được phép\": đây là permission, bên đứng trước là bearer.\n")
+	b.WriteString("- \"được\" đứng trước động từ trong câu bị động, ví dụ \"người lao động được trả lương đúng hạn\": đây là right của người lao động, không phải permission, và bên phải trả lương là bên mang nghĩa vụ tương ứng.\n")
+	b.WriteString("- \"không được\": đây là prohibition, không phải right.\n\n")
+
+	b.WriteString("conditions và exceptions là danh sách đối tượng, mỗi đối tượng có kind, text và quote nguyên văn.\n")
+	b.WriteString("kind của condition thuộc: " + strings.Join(norm.ConditionKinds, ", ") + ".\n")
+	b.WriteString("kind của exception thuộc: " + strings.Join(norm.ExceptionKinds, ", ") + ".\n")
+	b.WriteString("deadline chỉ cần chép nguyên văn cụm từ chỉ thời hạn vào trường text, không tự tách số và đơn vị, không tự quy đổi ngày làm việc thành ngày.\n")
+	b.WriteString("sanction phải có legal_basis, tức là điều khoản hoặc văn bản quy định chế tài đó, đúng như điều khoản viết. Không nêu được căn cứ thì không ghi sanction.\n")
+	b.WriteString("procedure_id và step chỉ điền khi điều khoản là một bước của một thủ tục có tên, step là số thứ tự bước.\n\n")
+
 	b.WriteString("Chỉ được dùng các mã lớp sau cho class_id, không được bịa mã mới, để trống nếu không chắc:\n")
 	for _, c := range r.Registry.Classes {
 		fmt.Fprintf(&b, "- %s: %s\n", c.ID, c.LabelVI)
 	}
 	b.WriteString("\nTrả về đúng một đối tượng JSON, không giải thích, theo dạng:\n")
-	b.WriteString(`{"statements":[{"statement_type":"duty","subject":{"text":"...","class_id":"vn-legal:..."},"modality":"obligation","action":{"text":"..."},"object":{"text":"..."},"conditions":[],"exceptions":[],"deadline":"","sanction":"","evidence":{"quote":"..."},"confidence":0.9}]}` + "\n")
+	b.WriteString(`{"statements":[{"statement_type":"duty",` +
+		`"bearer":{"text":"...","class_id":"vn-legal:...","is_actor":true},` +
+		`"counterparty":{"text":"...","class_id":"vn-legal:...","is_actor":true},` +
+		`"modality":"obligation","action":{"text":"..."},"object":{"text":"...","is_actor":false},` +
+		`"conditions":[{"kind":"precondition","text":"...","quote":"..."}],` +
+		`"exceptions":[{"kind":"force","text":"...","quote":"..."}],` +
+		`"deadline":{"text":"..."},` +
+		`"sanction":{"text":"...","quote":"...","legal_basis":"..."},` +
+		`"procedure_id":"","step":0,"evidence":{"quote":"..."},"confidence":0.9}]}` + "\n")
 	b.WriteString("Mỗi quote phải là một đoạn nguyên văn, sao chép đúng từng ký tự từ nội dung điều khoản.\n")
+	b.WriteString("Trường nào không có nội dung thì bỏ hẳn trường đó, không ghi đối tượng rỗng như {\"text\":\"\"}.\n")
 	b.WriteString("Điều khoản không chứa quy phạm nào thì trả về danh sách rỗng, không suy diễn.\n")
 	return b.String()
 }
@@ -101,6 +131,7 @@ func (r *NormRunner) Run(ctx context.Context, doc *law.Document, provisionID str
 			Model:           r.Model,
 			OntologyVersion: r.Registry.Version,
 		}
+		norm.Normalize(&rec.Statement)
 		if verr := norm.Validate(&rec.Statement, r.Registry, w.Text); verr != nil {
 			rec.Status = "invalid"
 			rec.Invalid = verr.Error()

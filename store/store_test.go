@@ -3,6 +3,7 @@ package store
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -86,5 +87,45 @@ func TestHash(t *testing.T) {
 	}
 	if got != want {
 		t.Errorf("HashFile = %q", got)
+	}
+}
+
+func TestJSONLRoundTripsAndAppends(t *testing.T) {
+	type row struct {
+		ID   string `json:"id"`
+		N    int    `json:"n"`
+		Text string `json:"text"`
+	}
+	path := filepath.Join(t.TempDir(), "nested", "rows.jsonl")
+	if err := AppendJSONL(path, []row{{ID: "a", N: 1, Text: "một dòng"}}); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	if err := AppendJSONL(path, []row{{ID: "b", N: 2, Text: "dòng nữa"}}); err != nil {
+		t.Fatalf("append again: %v", err)
+	}
+	got, err := ReadJSONL[row](path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if len(got) != 2 || got[0].ID != "a" || got[1].Text != "dòng nữa" {
+		t.Errorf("rows = %+v, an append only file keeps what was already in it", got)
+	}
+}
+
+func TestReadJSONLOfAFileNobodyWroteIsNotAnError(t *testing.T) {
+	got, err := ReadJSONL[struct{}](filepath.Join(t.TempDir(), "absent.jsonl"))
+	if err != nil || got != nil {
+		t.Errorf("got %v and %v, nothing yet is an answer rather than a failure", got, err)
+	}
+}
+
+func TestReadJSONLNamesTheFileItCouldNotRead(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "broken.jsonl")
+	if err := os.WriteFile(path, []byte("{\"id\":\"a\"}\nnot json\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	_, err := ReadJSONL[struct{}](path)
+	if err == nil || !strings.Contains(err.Error(), "broken.jsonl") {
+		t.Errorf("error = %v, a parse failure has to say which file", err)
 	}
 }

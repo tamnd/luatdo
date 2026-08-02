@@ -1,7 +1,6 @@
 package temporal
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -9,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/tamnd/luatdo/law"
+	"github.com/tamnd/luatdo/store"
 )
 
 // The temporal layer is stored as one file of raw operations per amending
@@ -66,7 +66,7 @@ func WriteOperations(dir, docID string, ops []Operation) error {
 // ReadOperations returns one instrument's operations. An instrument nobody read
 // is not an error.
 func ReadOperations(dir, docID string) ([]Operation, error) {
-	return readJSONL[Operation](OperationPath(dir, docID))
+	return store.ReadJSONL[Operation](OperationPath(dir, docID))
 }
 
 // AllOperations returns every read operation, in file order, which is the input
@@ -84,7 +84,7 @@ func AllOperations(dir string) ([]Operation, error) {
 		if entry.IsDir() || !strings.HasPrefix(entry.Name(), OperationPrefix) {
 			continue
 		}
-		ops, err := readJSONL[Operation](filepath.Join(dir, entry.Name()))
+		ops, err := store.ReadJSONL[Operation](filepath.Join(dir, entry.Name()))
 		if err != nil {
 			return nil, err
 		}
@@ -108,15 +108,15 @@ func WriteLayer(dir string, l *Layer) error {
 // returns an empty layer rather than an error, which is what lets a query
 // report "no versions" instead of failing.
 func ReadLayer(dir string) (*Layer, error) {
-	events, err := readJSONL[Event](filepath.Join(dir, EventsFile))
+	events, err := store.ReadJSONL[Event](filepath.Join(dir, EventsFile))
 	if err != nil {
 		return nil, err
 	}
-	versions, err := readJSONL[Version](filepath.Join(dir, VersionsFile))
+	versions, err := store.ReadJSONL[Version](filepath.Join(dir, VersionsFile))
 	if err != nil {
 		return nil, err
 	}
-	quarantined, err := readJSONL[Operation](filepath.Join(dir, QuarantineFile))
+	quarantined, err := store.ReadJSONL[Operation](filepath.Join(dir, QuarantineFile))
 	if err != nil {
 		return nil, err
 	}
@@ -130,7 +130,7 @@ func WriteValidity(dir string, rows []Validity) error {
 
 // ReadValidity loads the validity sidecar, empty when nothing has been stamped.
 func ReadValidity(dir string) ([]Validity, error) {
-	return readJSONL[Validity](filepath.Join(dir, ValidityFile))
+	return store.ReadJSONL[Validity](filepath.Join(dir, ValidityFile))
 }
 
 // Summary is what one temporal run produced, for coverage.
@@ -206,30 +206,4 @@ func replaceJSONL[T any](dir, name string, rows []T) error {
 		}
 	}
 	return os.WriteFile(path, []byte(b.String()), 0o644)
-}
-
-func readJSONL[T any](path string) ([]T, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	defer func() { _ = f.Close() }()
-	var out []T
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 1<<20), 1<<22)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
-		}
-		var row T
-		if err := json.Unmarshal([]byte(line), &row); err != nil {
-			return nil, fmt.Errorf("read %s: %w", path, err)
-		}
-		out = append(out, row)
-	}
-	return out, scanner.Err()
 }

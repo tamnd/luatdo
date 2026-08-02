@@ -1,7 +1,6 @@
 package concept
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -10,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/tamnd/luatdo/law"
+	"github.com/tamnd/luatdo/store"
 )
 
 // The concept layer is stored as one job file per document and three append
@@ -101,12 +101,12 @@ func TermUses(jobs []Job) []TermUse {
 
 // AskQuestions appends questions to the queue.
 func AskQuestions(dir string, qs []Question) error {
-	return appendJSONL(filepath.Join(dir, QuestionsFile), qs)
+	return store.AppendJSONL(filepath.Join(dir, QuestionsFile), qs)
 }
 
 // RecordAnswers appends answers.
 func RecordAnswers(dir string, as []Answer) error {
-	return appendJSONL(filepath.Join(dir, AnswersFile), as)
+	return store.AppendJSONL(filepath.Join(dir, AnswersFile), as)
 }
 
 // WriteClusters replaces the cluster file. Clusters are derived from the
@@ -146,17 +146,17 @@ func WriteClusters(dir string, cs []Cluster) error {
 
 // ReadQuestions returns every queued question in order.
 func ReadQuestions(dir string) ([]Question, error) {
-	return readJSONL[Question](filepath.Join(dir, QuestionsFile))
+	return store.ReadJSONL[Question](filepath.Join(dir, QuestionsFile))
 }
 
 // ReadAnswers returns every answer in order.
 func ReadAnswers(dir string) ([]Answer, error) {
-	return readJSONL[Answer](filepath.Join(dir, AnswersFile))
+	return store.ReadJSONL[Answer](filepath.Join(dir, AnswersFile))
 }
 
 // ReadClusters returns the current clusters.
 func ReadClusters(dir string) ([]Cluster, error) {
-	return readJSONL[Cluster](filepath.Join(dir, ClustersFile))
+	return store.ReadJSONL[Cluster](filepath.Join(dir, ClustersFile))
 }
 
 // Pending folds questions and answers: the questions nobody has answered yet,
@@ -187,52 +187,6 @@ func writeJSON(path string, v any) error {
 		return err
 	}
 	return os.WriteFile(path, append(data, '\n'), 0o644)
-}
-
-func appendJSONL[T any](path string, rows []T) error {
-	if len(rows) == 0 {
-		return nil
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = f.Close() }()
-	enc := json.NewEncoder(f)
-	for _, r := range rows {
-		if err := enc.Encode(r); err != nil {
-			return err
-		}
-	}
-	return f.Close()
-}
-
-func readJSONL[T any](path string) ([]T, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	defer func() { _ = f.Close() }()
-	var out []T
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 1<<20), 1<<20)
-	for scanner.Scan() {
-		if len(scanner.Bytes()) == 0 {
-			continue
-		}
-		var row T
-		if err := json.Unmarshal(scanner.Bytes(), &row); err != nil {
-			return nil, err
-		}
-		out = append(out, row)
-	}
-	return out, scanner.Err()
 }
 
 // SightingPath is where one document's discovery output lives.
@@ -310,7 +264,7 @@ func WriteAggregations(dir string, aggs []Aggregation) error {
 
 // ReadAggregations returns the aggregation output.
 func ReadAggregations(dir string) ([]Aggregation, error) {
-	return readJSONL[Aggregation](filepath.Join(dir, AggregateFile))
+	return store.ReadJSONL[Aggregation](filepath.Join(dir, AggregateFile))
 }
 
 // WritePromotions replaces the promotion file.
@@ -320,7 +274,7 @@ func WritePromotions(dir string, ps []Promotion) error {
 
 // ReadPromotions returns what was promoted.
 func ReadPromotions(dir string) ([]Promotion, error) {
-	return readJSONL[Promotion](filepath.Join(dir, PromotionFile))
+	return store.ReadJSONL[Promotion](filepath.Join(dir, PromotionFile))
 }
 
 // WriteWorkingDefinitions replaces the working definition file. It is rewritten
@@ -333,7 +287,7 @@ func WriteWorkingDefinitions(dir string, ws []WorkingDefinition) error {
 
 // ReadWorkingDefinitions returns the working definitions.
 func ReadWorkingDefinitions(dir string) ([]WorkingDefinition, error) {
-	return readJSONL[WorkingDefinition](filepath.Join(dir, WorkingFile))
+	return store.ReadJSONL[WorkingDefinition](filepath.Join(dir, WorkingFile))
 }
 
 // WriteMentions stores one document's mention report.

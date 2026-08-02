@@ -11,9 +11,9 @@ import (
 
 const clauseID = "vn:law:2019:45-2019-qh14:article-3:clause-1"
 
-func statementJSON(subject, action string, confidence float64) string {
-	return fmt.Sprintf(`{"statement_type":"duty","subject":{"text":"%s","class_id":"vn-legal:Employee"},"modality":"obligation","action":{"text":"%s"},"evidence":{"quote":"làm việc cho người sử dụng lao động"},"confidence":%v}`,
-		subject, action, confidence)
+func statementJSON(bearer, action string, confidence float64) string {
+	return fmt.Sprintf(`{"statement_type":"duty","bearer":{"text":"%s","class_id":"vn-legal:Employee","is_actor":true},"modality":"obligation","action":{"text":"%s"},"evidence":{"quote":"làm việc cho người sử dụng lao động"},"confidence":%v}`,
+		bearer, action, confidence)
 }
 
 func verdictJSON(verdict string) string {
@@ -145,10 +145,10 @@ func TestNormRunnerCorrectsMalformedJSON(t *testing.T) {
 }
 
 func TestUnion(t *testing.T) {
-	a := norm.Statement{Type: "duty", Subject: &norm.Ref{Text: "Người lao động"}, Action: norm.Ref{Text: "làm việc"}, Confidence: 0.6}
+	a := norm.Statement{Type: "duty", Bearer: &norm.Ref{Text: "Người lao động", IsActor: true}, Action: norm.Ref{Text: "làm việc"}, Confidence: 0.6}
 	b := a
 	b.Confidence = 0.9
-	other := norm.Statement{Type: "right", Subject: &norm.Ref{Text: "Người lao động"}, Action: norm.Ref{Text: "nghỉ ngơi"}, Confidence: 0.8}
+	other := norm.Statement{Type: "right", Bearer: &norm.Ref{Text: "Người lao động", IsActor: true}, Action: norm.Ref{Text: "nghỉ ngơi"}, Confidence: 0.8}
 	got := Union([]Candidate{
 		{Statements: []norm.Statement{a}},
 		{Statements: []norm.Statement{b, other}},

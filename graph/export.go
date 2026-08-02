@@ -44,6 +44,8 @@ CREATE CONSTRAINT norm_id IF NOT EXISTS FOR (n:Norm) REQUIRE n.id IS UNIQUE;
 CREATE CONSTRAINT term_use_id IF NOT EXISTS FOR (t:TermUse) REQUIRE t.id IS UNIQUE;
 CREATE CONSTRAINT merged_concept_id IF NOT EXISTS FOR (c:Concept) REQUIRE c.id IS UNIQUE;
 CREATE INDEX norm_type IF NOT EXISTS FOR (n:Norm) ON (n.norm_type);
+CREATE INDEX norm_deadline IF NOT EXISTS FOR (n:Norm) ON (n.deadline_value, n.deadline_calendar);
+CREATE INDEX norm_procedure IF NOT EXISTS FOR (n:Norm) ON (n.procedure_id);
 CREATE INDEX term_use_kind IF NOT EXISTS FOR (t:TermUse) ON (t.kind);
 CREATE INDEX term_use_role IF NOT EXISTS FOR (t:TermUse) ON (t.is_role);
 CREATE INDEX doc_effective IF NOT EXISTS FOR (d:Document) ON (d.effective_from);
@@ -278,29 +280,12 @@ func Export(dir string, in Input) error {
 		}); err != nil {
 		return err
 	}
-	if err := writeCSV(filepath.Join(dir, "norms.csv"),
-		[]string{"id:ID", "norm_type", "modality", "subject", "action", "object", "deadline", "sanction",
-			"evidence_quote", "evidence_start:int", "evidence_end:int", "confidence:float", "verdict",
-			"model", "ontology_version:int", ":LABEL"},
+	if err := writeCSV(filepath.Join(dir, "norms.csv"), normHeader(),
 		func(w *csv.Writer) error {
 			for i := range in.Statements {
 				r := &in.Statements[i]
-				s := &r.Statement
-				subject, object := "", ""
-				if s.Subject != nil {
-					subject = s.Subject.Text
-				}
-				if s.Object != nil {
-					object = s.Object.Text
-				}
-				verdict := ""
-				if r.Entailment != nil {
-					verdict = r.Entailment.Verdict
-				}
-				if err := w.Write([]string{r.ID, s.Type, s.Modality, subject, s.Action.Text, object,
-					s.Deadline, s.Sanction, s.Evidence.Quote, strconv.Itoa(s.Evidence.Start),
-					strconv.Itoa(s.Evidence.End), strconv.FormatFloat(s.Confidence, 'f', 2, 64),
-					verdict, r.Model, strconv.Itoa(r.OntologyVersion), "Norm"}); err != nil {
+				row := append([]string{r.ID}, normValues(r)...)
+				if err := w.Write(append(row, "Norm")); err != nil {
 					return err
 				}
 			}
@@ -309,10 +294,10 @@ func Export(dir string, in Input) error {
 		return err
 	}
 	if err := writeCSV(filepath.Join(dir, "norm_details.csv"),
-		[]string{"id:ID", "text", ":LABEL"},
+		[]string{"id:ID", "text", "kind", "quote", "legal_basis", ":LABEL"},
 		func(w *csv.Writer) error {
-			return eachNormDetail(in.Statements, func(id, text, label, _, _ string) error {
-				return w.Write([]string{id, text, label})
+			return eachNormDetail(in.Statements, func(d normDetail) error {
+				return w.Write([]string{d.ID, d.Text, d.Kind, d.Quote, d.Basis, d.Label})
 			})
 		}); err != nil {
 		return err
@@ -335,23 +320,17 @@ func Export(dir string, in Input) error {
 		func(w *csv.Writer) error {
 			for i := range in.Statements {
 				r := &in.Statements[i]
-				s := &r.Statement
-				if s.Subject != nil && s.Subject.ClassID != "" {
-					if err := w.Write([]string{r.ID, s.Subject.ClassID, "HAS_BEARER"}); err != nil {
-						return err
-					}
-				}
-				if s.Object != nil && s.Object.ClassID != "" {
-					if err := w.Write([]string{r.ID, s.Object.ClassID, "HAS_OBJECT"}); err != nil {
-						return err
-					}
+				if err := eachNormClass(r, func(classID, relType string) error {
+					return w.Write([]string{r.ID, classID, relType})
+				}); err != nil {
+					return err
 				}
 				if err := w.Write([]string{r.ID, r.ProvisionID, "HAS_LEGAL_BASIS"}); err != nil {
 					return err
 				}
 			}
-			return eachNormDetail(in.Statements, func(id, _, _, normID, relType string) error {
-				return w.Write([]string{normID, id, relType})
+			return eachNormDetail(in.Statements, func(d normDetail) error {
+				return w.Write([]string{d.NormID, d.ID, d.RelType})
 			})
 		}); err != nil {
 		return err
@@ -582,32 +561,165 @@ func eachAssignment(in Input, visit func(docID string, a *subject.Assignment) er
 	return nil
 }
 
+// normDetail is one condition, exception, or sanction as a node.
+//
+// Kind and Quote are on the node rather than only in the statement JSON,
+// because the questions that ask about a condition ask about a kind of
+// condition, and every claim in this projection has to be checkable against the
+// words that licensed it without leaving the graph.
+type normDetail struct {
+	ID      string
+	Text    string
+	Kind    string
+	Quote   string
+	Basis   string // the sanction's legal basis, as the provision writes it
+	Label   string
+	NormID  string
+	RelType string
+}
+
 // eachNormDetail visits every condition, exception, and sanction node of the
 // statement set. Detail node IDs hang off the norm ID, so they are as
 // deterministic as everything else.
-func eachNormDetail(records []norm.Record, visit func(id, text, label, normID, relType string) error) error {
+func eachNormDetail(records []norm.Record, visit func(normDetail) error) error {
 	for i := range records {
 		r := &records[i]
 		for j, c := range r.Statement.Conditions {
-			id := fmt.Sprintf("%s:condition-%d", r.ID, j+1)
-			if err := visit(id, c, "Condition", r.ID, "HAS_CONDITION"); err != nil {
+			if err := visit(normDetail{
+				ID: fmt.Sprintf("%s:condition-%d", r.ID, j+1), Text: c.Text, Kind: c.Kind, Quote: c.Quote,
+				Label: "Condition", NormID: r.ID, RelType: "HAS_CONDITION",
+			}); err != nil {
 				return err
 			}
 		}
 		for j, e := range r.Statement.Exceptions {
-			id := fmt.Sprintf("%s:exception-%d", r.ID, j+1)
-			if err := visit(id, e, "Exception", r.ID, "HAS_EXCEPTION"); err != nil {
+			if err := visit(normDetail{
+				ID: fmt.Sprintf("%s:exception-%d", r.ID, j+1), Text: e.Text, Kind: e.Kind, Quote: e.Quote,
+				Label: "Exception", NormID: r.ID, RelType: "HAS_EXCEPTION",
+			}); err != nil {
 				return err
 			}
 		}
-		if r.Statement.Sanction != "" {
-			id := r.ID + ":sanction"
-			if err := visit(id, r.Statement.Sanction, "Sanction", r.ID, "HAS_SANCTION"); err != nil {
+		if s := r.Statement.Sanction; s != nil {
+			if err := visit(normDetail{
+				ID: r.ID + ":sanction", Text: s.Text, Quote: s.Quote, Basis: s.LegalBasis,
+				Label: "Sanction", NormID: r.ID, RelType: "HAS_SANCTION",
+			}); err != nil {
 				return err
 			}
 		}
 	}
 	return nil
+}
+
+// eachNormClass visits the registry class each participant was placed in, with
+// the edge type that participant earns.
+//
+// The counterparty gets its own edge type. "Bên A phải thông báo cho bên B"
+// puts two actors in one provision and only one of them owes the duty, and a
+// projection that hangs both off HAS_BEARER answers question 9, which duties
+// the Labour Code places on employers, with the employees as well.
+func eachNormClass(r *norm.Record, visit func(classID, relType string) error) error {
+	s := &r.Statement
+	for _, p := range []struct {
+		ref     *norm.Ref
+		relType string
+	}{
+		{s.Bearer, "HAS_BEARER"},
+		{s.Counterparty, "HAS_COUNTERPARTY"},
+		{s.Object, "HAS_OBJECT"},
+	} {
+		if p.ref == nil || p.ref.ClassID == "" {
+			continue
+		}
+		if err := visit(p.ref.ClassID, p.relType); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// normFields flattens one statement into the scalar properties a Norm node
+// carries. Both writers call it, so the CSV columns and the Bolt properties
+// cannot drift apart, which they did the last time the schema moved.
+func normFields(r *norm.Record) map[string]any {
+	s := &r.Statement
+	text := func(ref *norm.Ref) string {
+		if ref == nil {
+			return ""
+		}
+		return ref.Text
+	}
+	out := map[string]any{
+		"norm_type": s.Type, "modality": s.Modality,
+		"bearer": text(s.Bearer), "counterparty": text(s.Counterparty),
+		"action": s.Action.Text, "object": text(s.Object),
+		"procedure_id": s.ProcedureID, "step": s.Step,
+		"deadline_text": "", "deadline_value": 0, "deadline_unit": "",
+		"deadline_calendar": "", "deadline_anchor": "", "deadline_anchor_at": "",
+		"evidence_quote": s.Evidence.Quote, "evidence_start": s.Evidence.Start,
+		"evidence_end": s.Evidence.End, "confidence": s.Confidence,
+		"verdict": "", "model": r.Model, "ontology_version": r.OntologyVersion,
+	}
+	if d := s.Deadline; d != nil {
+		out["deadline_text"], out["deadline_value"] = d.Text, d.Value
+		out["deadline_unit"], out["deadline_calendar"] = d.Unit, d.Calendar
+		out["deadline_anchor"], out["deadline_anchor_at"] = d.Anchor, d.AnchorAt
+	}
+	if r.Entailment != nil {
+		out["verdict"] = r.Entailment.Verdict
+	}
+	return out
+}
+
+// normColumns is the CSV column order, and the order the values come back in.
+// The header the export writes is built from it, so a field added to normFields
+// and forgotten here shows up as a missing column rather than a shifted one.
+var normColumns = []string{
+	"norm_type", "modality", "bearer", "counterparty", "action", "object",
+	"deadline_text", "deadline_value", "deadline_unit", "deadline_calendar",
+	"deadline_anchor", "deadline_anchor_at", "procedure_id", "step",
+	"evidence_quote", "evidence_start", "evidence_end", "confidence",
+	"verdict", "model", "ontology_version",
+}
+
+// normColumnTypes gives the neo4j-admin type suffix of every column that is
+// not a string.
+var normColumnTypes = map[string]string{
+	"deadline_value": "int", "step": "int", "evidence_start": "int",
+	"evidence_end": "int", "confidence": "float", "ontology_version": "int",
+}
+
+// normHeader is the norms.csv header, built from the column list so the two
+// cannot disagree.
+func normHeader() []string {
+	out := []string{"id:ID"}
+	for _, name := range normColumns {
+		if t, ok := normColumnTypes[name]; ok {
+			name += ":" + t
+		}
+		out = append(out, name)
+	}
+	return append(out, ":LABEL")
+}
+
+// normValues renders the fields in column order.
+func normValues(r *norm.Record) []string {
+	f := normFields(r)
+	out := make([]string, 0, len(normColumns))
+	for _, name := range normColumns {
+		switch v := f[name].(type) {
+		case string:
+			out = append(out, v)
+		case int:
+			out = append(out, strconv.Itoa(v))
+		case float64:
+			out = append(out, strconv.FormatFloat(v, 'f', 2, 64))
+		default:
+			out = append(out, fmt.Sprint(v))
+		}
+	}
+	return out
 }
 
 func writeCSV(path string, header []string, body func(*csv.Writer) error) error {

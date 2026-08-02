@@ -50,7 +50,7 @@ func (s *scripted) Complete(ctx context.Context, req api.Request) (api.Response,
 	usage := api.Usage{InputTokens: 1000, OutputTokens: 100, TotalTokens: 1100}
 	if strings.Contains(req.Instructions, "trích xuất các quy phạm") {
 		return api.Response{Text: fmt.Sprintf(
-			`{"statements":[{"statement_type":"duty","subject":{"text":"Người lao động","class_id":"vn-legal:Employee"},"modality":"obligation","action":{"text":"làm việc"},"evidence":{"quote":%q},"confidence":0.6}]}`,
+			`{"statements":[{"statement_type":"duty","bearer":{"text":"Người lao động","class_id":"vn-legal:Employee","is_actor":true},"modality":"obligation","action":{"text":"làm việc"},"evidence":{"quote":%q},"confidence":0.6}]}`,
 			quote), Usage: usage}, nil
 	}
 	return api.Response{Text: `{"verdict":"` + norm.VerdictEntailed + `","rationale":"ok"}`, Usage: usage}, nil

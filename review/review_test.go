@@ -26,12 +26,31 @@ func TestReasons(t *testing.T) {
 		t.Errorf("low confidence reasons = %v", got)
 	}
 	r := record(0.95)
-	r.Statement.Sanction = "phạt tiền"
-	r.Statement.Exceptions = []string{"trừ trường hợp bất khả kháng"}
+	r.Statement.Sanction = &norm.Sanction{Text: "phạt tiền", LegalBasis: "Điều 17"}
+	r.Statement.Exceptions = []norm.Clause{{Kind: norm.ExcForce, Text: "bất khả kháng", Quote: "trừ trường hợp bất khả kháng"}}
 	r.Entailment = &norm.Judgment{Verdict: norm.VerdictPartiallySupported}
 	if got := Reasons(r); len(got) != 3 {
 		t.Errorf("reasons = %v, want sanction, exception, and verdict", got)
 	}
+
+	// A penalty that lives in another instrument is the one a wrong extraction
+	// does the most damage with, so it goes to a human whatever the confidence.
+	r = record(0.99)
+	r.DocID = "vn:law:2019:45-2019-qh14"
+	r.Statement.Sanction = &norm.Sanction{Text: "phạt tiền", LegalBasis: "Điều 17 Nghị định số 12/2022/NĐ-CP", BasisDoc: "vn:decree:2022:12-2022-nd-cp"}
+	if got := Reasons(r); len(got) != 2 {
+		t.Errorf("reasons = %v, want the sanction and its foreign basis", got)
+	}
+
+	// Question 10 asks which duties have no identified bearer and whether that
+	// is the drafter's doing or the extractor's, and a bearer nobody could place
+	// is exactly the case a person has to look at.
+	r = record(0.99)
+	r.Statement.Bearer = &norm.Ref{Text: "cơ quan có thẩm quyền", IsActor: true}
+	if got := Reasons(r); len(got) != 1 {
+		t.Errorf("reasons = %v, want the unplaced bearer", got)
+	}
+
 	r = record(0.1)
 	r.Status = "invalid"
 	if got := Reasons(r); got != nil {

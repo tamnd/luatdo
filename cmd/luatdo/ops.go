@@ -236,6 +236,7 @@ func cmdRun(args []string) error {
 	population := fs.Int("population", 3, "independent candidates in slow mode")
 	corrections := fs.Int("max-corrections", 2, "bounded retries on invalid model output")
 	dryRun := fs.Bool("dry-run", false, "print the queue and the plan, call no model")
+	scope := fs.String("campaign", "", "restrict the queue to a named campaign, see luatdo campaign list")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -246,6 +247,20 @@ func cmdRun(args []string) error {
 	tasks, err := coverage.Queue(s)
 	if err != nil {
 		return err
+	}
+	if *scope != "" {
+		sc, err := campaign.LookupScope(*scope)
+		if err != nil {
+			return err
+		}
+		_, inScope, err := campaignDocs(s, sc)
+		if err != nil {
+			return err
+		}
+		before := len(tasks)
+		tasks = campaign.InScope(tasks, inScope)
+		fmt.Printf("campaign %s: %d documents in scope, %d of %d queued provisions kept\n",
+			sc.Name, len(inScope), len(tasks), before)
 	}
 	if *limit > 0 && *limit < len(tasks) {
 		tasks = tasks[:*limit]

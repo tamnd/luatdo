@@ -309,3 +309,46 @@ func DefinedLabels(terms []TermUse) map[string]bool {
 	}
 	return out
 }
+
+// LabelIndex maps a slugged label to the concept it belongs to, so a layer
+// outside this package can attach a concept identifier to a phrase it read
+// somewhere else.
+//
+// Only the same relation is indexed. A term use filed as broader or narrower
+// than a concept is related to it and is not it, and folding those into the
+// index would make two different things answer to one identifier, which is the
+// merge by string match this package exists to refuse.
+//
+// A slug two concepts both claim is dropped rather than decided. That is the
+// DIFFERS_FROM case: one phrase, two meanings, and picking either one here
+// would silently pick a reading of the law.
+func LabelIndex(terms []TermUse, memberships []Membership) map[string]string {
+	byID := make(map[string]*TermUse, len(terms))
+	for i := range terms {
+		byID[terms[i].ID] = &terms[i]
+	}
+	out, ambiguous := map[string]string{}, map[string]bool{}
+	claim := func(label, conceptID string) {
+		slug := law.Slug(label)
+		if slug == "" || ambiguous[slug] {
+			return
+		}
+		if seen, ok := out[slug]; ok && seen != conceptID {
+			delete(out, slug)
+			ambiguous[slug] = true
+			return
+		}
+		out[slug] = conceptID
+	}
+	for _, m := range memberships {
+		t := byID[m.TermUseID]
+		if t == nil || m.Relation != RelationSame {
+			continue
+		}
+		claim(t.LabelVI, m.ConceptID)
+		for _, a := range t.Aliases {
+			claim(a, m.ConceptID)
+		}
+	}
+	return out
+}
