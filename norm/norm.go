@@ -43,6 +43,11 @@ var bearerRequired = map[string]bool{
 	"duty": true, "right": true, "prohibition": true, "permission": true,
 }
 
+// NeedsBearer reports whether a statement of this type has to name the party it
+// binds. It is exported so a metric over bearer placement measures the same set
+// validation does, rather than a second list that drifts from this one.
+func NeedsBearer(statementType string) bool { return bearerRequired[statementType] }
+
 // Ref is one participant of a statement: the surface text, the registry class
 // where the extractor could place it, and the concept where the concept layer
 // can resolve it.
@@ -225,6 +230,53 @@ func slugOf(r *Ref) string {
 		return ""
 	}
 	return law.Slug(r.Text)
+}
+
+// NearDuplicates groups records from the same provision that make the same
+// claim and differ only in how the bearer is worded.
+//
+// The dedup key in Key has the bearer slug in it, which is right for the slow
+// mode selector: two candidates that named different parties proposed different
+// norms and the judges get to decide. It is wrong afterwards, because the same
+// party is written "người lao động" in one clause and "người lao động đi làm
+// việc ở nước ngoài theo Hợp đồng cá nhân" in the next, and a graph carrying
+// both answers question 9 twice with one norm.
+//
+// Nothing here merges anything. A merge needs to pick which wording survives
+// and that is a decision about the law, so this reports the groups and the
+// report prints the count.
+//
+// The key carries the object and the counterparty as well as the action, and
+// that is the whole difference between this and the eyeballed check that raised
+// the question in M11. That one keyed on provision, type and action alone, made
+// 16 groups over the labour campaign, and read the 20 surplus records as a 5.9
+// percent inflation of every count in the report. Reading the groups shows most
+// of them are nothing of the kind: one clause lets an authority found a public
+// college and a private one, another has a company register the same contract
+// with two different bodies, and a third lists four documents a file must
+// contain. Those are separate norms that share a verb. With the object and the
+// counterparty in the key, the labour campaign has one group of two across 605
+// records, and the M11 figure does not survive contact with the definition.
+func NearDuplicates(records []Record) [][]Record {
+	groups := map[string][]Record{}
+	var order []string
+	for _, rec := range records {
+		s := &rec.Statement
+		key := strings.Join([]string{
+			rec.ProvisionID, s.Type, law.Slug(s.Action.Text), slugOf(s.Object), slugOf(s.Counterparty),
+		}, "|")
+		if _, seen := groups[key]; !seen {
+			order = append(order, key)
+		}
+		groups[key] = append(groups[key], rec)
+	}
+	var out [][]Record
+	for _, key := range order {
+		if g := groups[key]; len(g) > 1 {
+			out = append(out, g)
+		}
+	}
+	return out
 }
 
 // Normalize fills the fields this package can derive from the words the

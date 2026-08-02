@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/tamnd/luatdo/eval"
 	"github.com/tamnd/luatdo/law"
 	"github.com/tamnd/luatdo/store"
 )
@@ -171,36 +172,13 @@ func CheckGold(gs []Gold, pairs []GoldPair) []string {
 	return out
 }
 
-// Count is one confusion table. It is kept as counts rather than a rate so a
-// report can say ninety percent of ten and ninety percent of two thousand
-// differently.
-type Count struct {
-	TP int `json:"tp"`
-	FP int `json:"fp"`
-	FN int `json:"fn"`
-}
-
-// Precision, Recall and F1 return zero rather than a division by zero when
-// nothing was predicted or nothing was there to find. Zero is honest here: a
-// pass that found nothing has no precision to report.
-func (c Count) Precision() float64 { return ratio(c.TP, c.TP+c.FP) }
-func (c Count) Recall() float64    { return ratio(c.TP, c.TP+c.FN) }
-func (c Count) F1() float64 {
-	p, r := c.Precision(), c.Recall()
-	if p+r == 0 {
-		return 0
-	}
-	return 2 * p * r / (p + r)
-}
-
-// Accuracy is right out of decided, over the cases where both the annotation
-// and the reading had an opinion.
-type Accuracy struct {
-	Right int `json:"right"`
-	Of    int `json:"of"`
-}
-
-func (a Accuracy) Rate() float64 { return ratio(a.Right, a.Of) }
+// The confusion table and the accuracy live in eval, shared with the norm
+// layer. They are aliases and not wrappers, so every metrics file already on
+// disk still reads back.
+type (
+	Count    = eval.Count
+	Accuracy = eval.Accuracy
+)
 
 // Metrics is what the gold set says about a reading pass.
 type Metrics struct {
@@ -484,13 +462,6 @@ func (m MergeMetrics) String() string {
 
 func contains(haystack, needle string) bool {
 	return strings.Contains(law.Slug(haystack), law.Slug(needle))
-}
-
-func ratio(n, of int) float64 {
-	if of == 0 {
-		return 0
-	}
-	return float64(n) / float64(of)
 }
 
 func pct(r float64) string { return fmt.Sprintf("%.1f%%", r*100) }

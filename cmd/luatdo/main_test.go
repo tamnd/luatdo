@@ -107,3 +107,38 @@ func TestArgOutOfRangeIsEmptyRatherThanAPanic(t *testing.T) {
 		t.Error("a missing argument should be the empty string")
 	}
 }
+
+func TestParseSubFindsAFlagAfterTwoSubcommands(t *testing.T) {
+	fs := flag.NewFlagSet("eval", flag.ContinueOnError)
+	n := fs.Int("n", 60, "")
+	sub, rest, err := parseSub(fs, []string{"judge", "sample", "-n", "50"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sub != "judge" || len(rest) != 1 || rest[0] != "sample" {
+		t.Errorf("sub = %q rest = %v", sub, rest)
+	}
+	if *n != 50 {
+		t.Errorf("n = %d, a command that draws sixty and is told fifty has ignored the person running it", *n)
+	}
+}
+
+func TestParseSubStillTakesFlagsFirst(t *testing.T) {
+	fs := flag.NewFlagSet("campaign", flag.ContinueOnError)
+	data := fs.String("data", "", "")
+	sub, rest, err := parseSub(fs, []string{"-data", "/tmp/x", "report", "labour-2025"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sub != "report" || len(rest) != 1 || rest[0] != "labour-2025" || *data != "/tmp/x" {
+		t.Errorf("sub = %q rest = %v data = %q", sub, rest, *data)
+	}
+}
+
+func TestParseSubWithNothingAtAll(t *testing.T) {
+	fs := flag.NewFlagSet("eval", flag.ContinueOnError)
+	sub, rest, err := parseSub(fs, nil)
+	if err != nil || sub != "" || rest != nil {
+		t.Errorf("sub = %q rest = %v err = %v", sub, rest, err)
+	}
+}

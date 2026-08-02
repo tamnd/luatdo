@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/tamnd/luatdo/eval"
 	"github.com/tamnd/luatdo/law"
 	"github.com/tamnd/luatdo/store"
 )
@@ -15,10 +16,6 @@ import (
 // annotation written while looking at what a model produced measures agreement
 // with that model rather than accuracy, and the two look identical once they
 // are written down.
-//
-// The arithmetic below duplicates the concept layer's. M12 lifts both into one
-// evaluation harness, and until then a scoring helper shared across layers
-// would be a package that exists to hold three integers.
 
 // GoldFile is the annotated clause file inside the norm gold directory.
 const GoldFile = "gold_norms.jsonl"
@@ -133,32 +130,14 @@ func CheckGold(gs []Gold) []string {
 	return out
 }
 
-// Count is one confusion table, kept as counts rather than a rate so a report
-// can say ninety percent of ten and ninety percent of two thousand differently.
-type Count struct {
-	TP int `json:"tp"`
-	FP int `json:"fp"`
-	FN int `json:"fn"`
-}
-
-func (c Count) Precision() float64 { return ratio(c.TP, c.TP+c.FP) }
-func (c Count) Recall() float64    { return ratio(c.TP, c.TP+c.FN) }
-func (c Count) F1() float64 {
-	p, r := c.Precision(), c.Recall()
-	if p+r == 0 {
-		return 0
-	}
-	return 2 * p * r / (p + r)
-}
-
-// Accuracy is right out of decided, over the cases where both the annotation
-// and the extraction had an opinion.
-type Accuracy struct {
-	Right int `json:"right"`
-	Of    int `json:"of"`
-}
-
-func (a Accuracy) Rate() float64 { return ratio(a.Right, a.Of) }
+// The confusion table and the accuracy live in eval, because the concept layer
+// scores the same way and two copies of an arithmetic are two chances for a
+// number in a report to mean something other than what the reader takes it to
+// mean. These are aliases and not wrappers so the stored JSON is unchanged.
+type (
+	Count    = eval.Count
+	Accuracy = eval.Accuracy
+)
 
 // Metrics is what the gold set says about an extraction pass.
 type Metrics struct {
@@ -297,8 +276,8 @@ func scoreUnit(m *Metrics, g *Gold, got []Record) {
 				m.Bearers.Right++
 			}
 		}
-		score(&m.Sanctions, w.HasSanction, s.Sanction != nil)
-		score(&m.Deadlines, w.Deadline != "", s.Deadline != nil)
+		m.Sanctions.Observe(w.HasSanction, s.Sanction != nil)
+		m.Deadlines.Observe(w.Deadline != "", s.Deadline != nil)
 	}
 	for slug := range have {
 		if want[slug] == nil {
@@ -357,17 +336,6 @@ func duocSense(records []Record) string {
 	return SenseNone
 }
 
-func score(c *Count, want, got bool) {
-	switch {
-	case want && got:
-		c.TP++
-	case want && !got:
-		c.FN++
-	case !want && got:
-		c.FP++
-	}
-}
-
 func contains(set []string, s string) bool {
 	for _, v := range set {
 		if v == s {
@@ -375,11 +343,4 @@ func contains(set []string, s string) bool {
 		}
 	}
 	return false
-}
-
-func ratio(a, b int) float64 {
-	if b == 0 {
-		return 0
-	}
-	return float64(a) / float64(b)
 }

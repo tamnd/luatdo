@@ -61,7 +61,12 @@ func (r *NormRunner) Instructions() string {
 	b.WriteString("bearer là bên phải làm, được làm hoặc bị cấm. counterparty là bên còn lại của quan hệ, ví dụ bên được thông báo hoặc bên nhận tiền.\n")
 	b.WriteString("Trong câu \"Bên A phải thông báo cho bên B\" thì bearer là bên A và counterparty là bên B.\n")
 	b.WriteString("Đặt is_actor bằng true cho mọi tham chiếu chỉ một chủ thể pháp lý, kể cả khi chủ thể đó nằm ở vị trí đối tượng. Đặt false cho tài liệu, tiền, thời hạn và mọi thứ không phải chủ thể.\n")
-	b.WriteString("Không có bên mang nghĩa vụ nào được nêu trong điều khoản thì để trống bearer, không suy ra từ điều khác.\n\n")
+	b.WriteString("Không có bên mang nghĩa vụ nào được nêu trong điều khoản thì để trống bearer, không suy ra từ điều khác. Dẫn nhập của điều là một phần của điều khoản, nên chủ thể nêu ở dẫn nhập vẫn được dùng làm bearer.\n")
+	// The same sentence is in the judge's instructions. Two prompts that read the
+	// same drafting form differently do not disagree about the law, they disagree
+	// about a convention neither was told, and the gate then deletes the
+	// extractor's correct output for not matching a rule nobody wrote down.
+	b.WriteString("Các cách viết \"do X quy định\", \"do X ban hành\", \"do X thành lập\", \"X quyết định\", \"X có trách nhiệm\", \"Nhà nước có chính sách\" đều ghi là duty của X, kể cả khi điều khoản không có chữ \"phải\".\n\n")
 
 	// The được rule. This is one word and it is three different things, and
 	// getting it wrong turns a worker's right into an employer's permission,

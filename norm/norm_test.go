@@ -190,3 +190,27 @@ func TestRederiveTakesTheDeadlineApartAgainWithTodaysGrammar(t *testing.T) {
 		t.Errorf("deadline = %+v, the anchor is derived from the same words and comes back with them", s.Deadline)
 	}
 }
+
+func TestNearDuplicatesGroupsOneClaimWrittenWithTwoBearers(t *testing.T) {
+	bare, qualified := Record{ProvisionID: "p1", Statement: duty()}, Record{ProvisionID: "p1", Statement: duty()}
+	qualified.Statement.Bearer = &Ref{Text: "người sử dụng lao động là doanh nghiệp"}
+	groups := NearDuplicates([]Record{bare, qualified})
+	if len(groups) != 1 || len(groups[0]) != 2 {
+		t.Fatalf("groups = %v, one norm written two ways answers the same question twice", groups)
+	}
+}
+
+func TestNearDuplicatesLeavesTwoClaimsThatShareAVerbAlone(t *testing.T) {
+	wages, notice := Record{ProvisionID: "p1", Statement: duty()}, Record{ProvisionID: "p1", Statement: duty()}
+	notice.Statement.Object = &Ref{Text: "tiền thưởng"}
+	if groups := NearDuplicates([]Record{wages, notice}); len(groups) != 0 {
+		t.Errorf("groups = %v, paying wages and paying a bonus are two duties and a key that folds them overcounts", groups)
+	}
+}
+
+func TestNearDuplicatesKeepsProvisionsApart(t *testing.T) {
+	here, there := Record{ProvisionID: "p1", Statement: duty()}, Record{ProvisionID: "p2", Statement: duty()}
+	if groups := NearDuplicates([]Record{here, there}); len(groups) != 0 {
+		t.Errorf("groups = %v, the same duty stated in two articles is stated in two articles", groups)
+	}
+}

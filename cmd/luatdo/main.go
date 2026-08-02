@@ -64,18 +64,22 @@ Commands:
 // second branch keeps the older form working for anyone with a script that
 // writes the flags first.
 func parseSub(fs *flag.FlagSet, args []string) (string, []string, error) {
-	sub := ""
-	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
-		sub, args = args[0], args[1:]
+	var positional []string
+	for {
+		if err := fs.Parse(args); err != nil {
+			return "", nil, err
+		}
+		rest := fs.Args()
+		if len(rest) == 0 {
+			break
+		}
+		positional = append(positional, rest[0])
+		args = rest[1:]
 	}
-	if err := fs.Parse(args); err != nil {
-		return "", nil, err
+	if len(positional) == 0 {
+		return "", nil, nil
 	}
-	rest := fs.Args()
-	if sub == "" && len(rest) > 0 {
-		sub, rest = rest[0], rest[1:]
-	}
-	return sub, rest, nil
+	return positional[0], positional[1:], nil
 }
 
 // arg returns the nth positional argument or the empty string. A missing

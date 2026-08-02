@@ -9,6 +9,7 @@ import (
 
 	"github.com/tamnd/luatdo/campaign"
 	"github.com/tamnd/luatdo/coverage"
+	"github.com/tamnd/luatdo/eval"
 	"github.com/tamnd/luatdo/law"
 	"github.com/tamnd/luatdo/norm"
 	"github.com/tamnd/luatdo/store"
@@ -70,7 +71,7 @@ func cmdCampaign(args []string) error {
 		return nil
 	}
 
-	records, err := loadTrusted(s)
+	records, err := campaignRecords(s)
 	if err != nil {
 		return err
 	}
@@ -89,12 +90,95 @@ func cmdCampaign(args []string) error {
 	if err != nil {
 		return err
 	}
+	// The judge's own state is a defect of the campaign, not of the eval store.
+	// Every precision figure above it came from that instrument, so a report
+	// that leaves it in another file is a report that reads better than the work
+	// it describes.
+	if err := noteJudge(s, &report); err != nil {
+		return err
+	}
 	fmt.Print(report)
 	out := filepath.Join(s.Campaign(), sc.Name+".json")
 	if err := store.WriteJSON(out, report); err != nil {
 		return err
 	}
 	fmt.Printf("wrote %s\n", out)
+	return nil
+}
+
+// campaignRecords is every statement the pass proposed, carrying the status the
+// build settled on.
+//
+// The two sources disagree on purpose and the trusted one wins where it has an
+// opinion: a statement a person kept is rejected in the job artifact and
+// approved in the trusted store, and the job is the older document. The job
+// artifacts are still needed for the rest, because a report drawn from the
+// trusted store alone can only report that everything in it was accepted.
+func campaignRecords(s *store.Store) ([]norm.Record, error) {
+	jobs, err := loadNormJobs(s)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return loadTrusted(s)
+		}
+		return nil, err
+	}
+	trusted, err := loadTrusted(s)
+	if err != nil {
+		return nil, err
+	}
+	byID := map[string]norm.Record{}
+	for _, rec := range trusted {
+		byID[rec.ID] = rec
+	}
+	var out []norm.Record
+	seen := map[string]bool{}
+	for _, job := range jobs {
+		for _, rec := range job.Records {
+			if seen[rec.ID] {
+				continue
+			}
+			seen[rec.ID] = true
+			if t, ok := byID[rec.ID]; ok {
+				rec = t
+			}
+			out = append(out, rec)
+		}
+	}
+	// A trusted record whose job artifact has since been deleted is still in the
+	// graph and still has to be counted.
+	for _, rec := range trusted {
+		if !seen[rec.ID] {
+			out = append(out, rec)
+		}
+	}
+	return out, nil
+}
+
+// noteJudge records what is known about the instrument that produced the
+// verdicts in this report, whether that is a kappa or the absence of one.
+func noteJudge(s *store.Store, r *campaign.Report) error {
+	a, err := judgeAgreement(s)
+	if err != nil {
+		return err
+	}
+	if a == nil {
+		r.Note("judge-not-validated", fmt.Sprintf(
+			"nobody has labelled a sample of the %d verdicts behind the statement counts above, so the acceptance rate is the judge agreeing with itself",
+			r.Statements))
+		return nil
+	}
+	gate, _ := eval.Named("judge-agreement")
+	if a.Kappa() >= gate.Min && a.Pairs >= gate.MinCases {
+		return nil
+	}
+	r.Note("judge-below-the-gate", fmt.Sprintf(
+		"the judge agrees with a person at kappa %.3f over %d labelled items against a floor of %.3f over %d, so the verdicts above are not evidence of precision",
+		a.Kappa(), a.Pairs, gate.Min, gate.MinCases))
+	if a.Skewed() {
+		r.Note("judge-sample-skewed", fmt.Sprintf(
+			"%.0f%% of the labels in that sample carry one value, so the kappa is unstable and a larger sample is worth more than a better prompt",
+			a.Skew()*100))
+	}
 	return nil
 }
 
