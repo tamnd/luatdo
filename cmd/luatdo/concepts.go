@@ -15,7 +15,9 @@ import (
 
 	"github.com/tamnd/luatdo/anchor"
 	"github.com/tamnd/luatdo/api"
+	"github.com/tamnd/luatdo/campaign"
 	"github.com/tamnd/luatdo/concept"
+	"github.com/tamnd/luatdo/law"
 	"github.com/tamnd/luatdo/store"
 )
 
@@ -30,9 +32,13 @@ func cmdConcepts(args []string) error {
 	dataDir := fs.String("data", "", "data directory")
 	n := fs.Int("n", 200, "units to draw for the gold set")
 	seed := fs.String("seed", "m7", "sampling seed, so a draw is reproducible")
-	limit := fs.Int("limit", 0, "stop after this many units, 0 for all")
+	limit := fs.Int("limit", 0, "stop after this many documents, 0 for all")
 	compare := fs.Bool("compare", false, "ask the model to compare each queued pair")
 	who := fs.String("by", "", "who is deciding, recorded on the edge")
+	scope := fs.String("campaign", "", "restrict the reading pass to a named campaign")
+	only := fs.String("doc", "", "one document, for a trial run before a campaign")
+	workers := fs.String("parallel", "auto", "worker count, or auto")
+	dryRun := fs.Bool("dry-run", false, "print the queue, call no model")
 	sub, rest, err := parseSub(fs, args)
 	if err != nil {
 		return err
@@ -48,7 +54,9 @@ func cmdConcepts(args []string) error {
 	case "prompt":
 		return conceptPrompt(s, arg(rest, 0))
 	case "read":
-		return conceptRead(s, arg(rest, 0), *limit)
+		return conceptRead(s, breadth{
+			scope: *scope, only: *only, limit: *limit, workers: *workers, dryRun: *dryRun,
+		})
 	case "cluster":
 		return conceptCluster(s, *compare)
 	case "queue":
@@ -251,56 +259,109 @@ func conceptPrompt(s *store.Store, unitID string) error {
 	return nil
 }
 
-func conceptRead(s *store.Store, only string, limit int) error {
+// anchoredDocs lists the documents that hold at least one definition unit.
+//
+// The anchor stage wrote a file per document over a hundred thousand of them
+// and seven thousand hold units, so the queue is built by reading the ones a
+// campaign asks about rather than all of them. Without a campaign there is
+// nothing to narrow by and the whole directory is read, which takes about a
+// minute and is the price of an accurate total.
+func anchoredDocs(s *store.Store, ids []string) ([]string, error) {
+	if len(ids) > 0 {
+		out := make([]string, 0, len(ids))
+		for _, id := range ids {
+			var r anchor.Result
+			err := store.ReadJSON(filepath.Join(s.Anchor(), law.FileName(id)), &r)
+			if os.IsNotExist(err) {
+				continue
+			}
+			if err != nil {
+				return nil, err
+			}
+			if len(r.Units) > 0 {
+				out = append(out, r.DocID)
+			}
+		}
+		return out, nil
+	}
+	var out []string
+	err := eachUnit(s, func(r *anchor.Result) error {
+		out = append(out, r.DocID)
+		return nil
+	})
+	return out, err
+}
+
+func conceptRead(s *store.Store, b breadth) error {
 	eng, err := openEngine()
 	if err != nil {
 		return fmt.Errorf("the reading pass needs a model: %w", err)
 	}
 	reader := &concept.Reader{Completer: eng.completer, Model: eng.model, MaxCorrections: 2}
 
-	var usage api.Usage
-	units, read, failed, calls := 0, 0, 0, 0
-	err = eachUnit(s, func(r *anchor.Result) error {
-		if only != "" && r.DocID != only {
-			return nil
+	// A campaign narrows the queue before anything is read off disk, so a
+	// campaign pass does not pay for a scan of the whole anchor store.
+	var ids []string
+	if b.scope != "" {
+		sc, err := campaign.LookupScope(b.scope)
+		if err != nil {
+			return err
 		}
-		if limit > 0 && units >= limit {
-			return nil
+		_, inScope, err := campaignDocs(s, sc)
+		if err != nil {
+			return err
 		}
+		for id := range inScope {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+	}
+	candidates, err := anchoredDocs(s, ids)
+	if err != nil {
+		return err
+	}
+	b.name, b.store = "concepts read", s
+	b.done = func(docID string) bool {
+		_, err := os.Stat(concept.JobPath(s.Concepts(), docID))
+		return err == nil
+	}
+
+	summary, err := b.run(candidates, func(ctx context.Context, docID string) (campaign.Outcome, error) {
+		var r anchor.Result
+		if err := store.ReadJSON(filepath.Join(s.Anchor(), law.FileName(docID)), &r); err != nil {
+			return campaign.Outcome{}, err
+		}
+		var out campaign.Outcome
 		var jobs []concept.Job
 		for i := range r.Units {
-			if limit > 0 && units >= limit {
-				break
-			}
-			units++
-			// One unit takes a reasoning model minutes, so a pass over a
-			// definitions article is an hour of silence unless it says what it
-			// is doing. An hour of silence looks exactly like a hang, and the
-			// first person to see it here killed a run that was working.
-			started := time.Now()
-			job, err := reader.Read(context.Background(), &r.Units[i], scopeOf(r, &r.Units[i]))
-			fmt.Fprintf(os.Stderr, "  %4d %-60s %s\n", units, r.Units[i].ID, time.Since(started).Round(time.Second))
+			job, err := reader.Read(ctx, &r.Units[i], scopeOf(&r, &r.Units[i]))
 			if job != nil {
-				usage = addAPIUsage(usage, job.Usage)
-				calls += len(job.Attempts)
+				out.Usage = addAPIUsage(out.Usage, job.Usage)
+				out.Calls += len(job.Attempts)
+				out.Produced += len(job.TermUses)
 				jobs = append(jobs, *job)
-				if job.Err != "" {
-					failed++
-				} else {
-					read += len(job.TermUses)
-				}
 			}
 			if err != nil {
-				return err
+				// The units already read are thrown away with the document.
+				// Writing them would mark the document read, and a document
+				// read to unit four of eleven is worse than one not read at
+				// all, because nothing will ever come back for the other seven.
+				return campaign.Outcome{}, err
 			}
 		}
-		return concept.WriteJob(s.Concepts(), jobs)
+		if len(jobs) == 0 {
+			out.Skipped = true
+			return out, nil
+		}
+		return out, concept.WriteJob(s.Concepts(), jobs)
 	})
-	fmt.Printf("read %d units, %d term uses, %d units the model could not get right, %d calls\n",
-		units, read, failed, calls)
-	fmt.Printf("usage %d input, %d output, %d total tokens\n", usage.InputTokens, usage.OutputTokens, usage.TotalTokens)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("usage %d input, %d output, %d total tokens\n",
+		summary.Usage.InputTokens, summary.Usage.OutputTokens, summary.Usage.TotalTokens)
 	reportRoutes(eng)
-	return err
+	return nil
 }
 
 func conceptCluster(s *store.Store, compare bool) error {

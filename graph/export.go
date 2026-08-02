@@ -68,7 +68,15 @@ CREATE INDEX temporal_version_force IF NOT EXISTS FOR (v:TemporalVersion) ON (v.
 // componentLabels is what a component node carries. law.ProvisionAlias rides
 // along until the release named beside it, so a query written against the
 // earlier projection still matches.
-const componentLabels = "Component;" + law.ProvisionAlias
+//
+// The separator is the array delimiter and not a semicolon, because the
+// importer treats :LABEL as an array field and splits it with whatever
+// --array-delimiter says. A semicolon here, against a dump that passes a pipe,
+// imports one label literally named "Component;Provision", which is not a label
+// anything queries and is not a node count anything notices. The merge path
+// sets both labels in Cypher and was always right, so the two paths disagreed
+// about the alias and nothing said so.
+const componentLabels = "Component" + arrayDelimiter + law.ProvisionAlias
 
 // Input is everything the projection is built from. Registry, Definitions,
 // Mentions, Statements, and the subject pair are optional; a corpus without

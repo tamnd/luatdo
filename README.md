@@ -137,6 +137,8 @@ RETURN path
 | `luatdo review` | Work the human review queue for gated statements |
 | `luatdo build` | Assemble verified statements into the trusted store |
 | `luatdo export neo4j` | Project the trusted store into Neo4j, full import or incremental merge, scoped to a campaign |
+| `luatdo export rdf` | Project that dump into N-Triples, with the vocabulary alignment shipped beside the data |
+| `luatdo export legalruleml` | Write one measured campaign's trusted norms as LegalRuleML, with the release gates enforced |
 | `luatdo graph` | Ask the projected graph one of the twenty three competency questions |
 | `luatdo coverage` | Report what is parsed, extracted, verified, and exported, recomputed from disk |
 | `luatdo run` | The campaign: work the coverage queue with parallel workers until it is empty |
@@ -519,6 +521,18 @@ luatdo run --parallel auto
 
 Every call records which endpoint served it, so a corpus assembled from three endpoints can still say where each statement came from.
 
+`run` works the norm queue, and the three other model passes take the same flags for the same reasons.
+
+```sh
+luatdo concepts read --campaign labour-2025 --parallel 6
+luatdo relations extract --campaign labour-2025 --parallel 6
+luatdo temporal read --campaign labour-2025 --parallel 6
+```
+
+`--campaign` narrows the queue to one named slice, `--parallel` takes a worker count or `auto`, and `--dry-run` prints the queue and calls no model.
+That last one exists because the honest size of a pass is not obvious until it is measured: the concept reading pass has 7,221 anchored documents and 49,175 definition units in it, and at the rate the models actually answer that is weeks of wall clock rather than an afternoon.
+Each pass writes one artifact per document and recomputes its queue from what is on disk, so an interrupted pass resumes where it stopped instead of starting again, and a document that failed halfway leaves nothing behind and comes back whole.
+
 Each provision reports what it cost:
 
 ```text
@@ -547,10 +561,20 @@ luatdo run --campaign labour-2025 --parallel 6
 luatdo campaign report labour-2025
 ```
 
+There are two of them.
+
 `labour-2025` is the labour code and every national instrument under it, in force through 2025: 1,239 documents and 36,371 extractable provisions, out of 4,563 documents in the labour subject.
 The cut is on the issuing body rather than the instrument type, because a decision is central when a ministry signs it and local when a province does, and the type says nothing either way.
 The 2,119 provincial documents it drops are two thirds of the subject by count and almost none of it by normative content.
 That is a statement about what the pass is for, and it is in the scope definition where a reader can argue with it.
+
+`tax-2025` is the second one and it was picked for contrast rather than for size: 887 documents and 26,048 extractable provisions of tax and customs law, cut the same way on the issuing body.
+A metric measured on one domain is a metric about that domain until somebody runs a second one, and everything above was measured on labour prose, which places duties on named parties in sentences shaped the way the norm reader was built to expect.
+Tax law states rates, thresholds, filing deadlines and computation rules, most of its content sits in appended schedules rather than in numbered articles, and its instruments amend each other several times a year.
+Each of those is a way this pipeline can be wrong that a second labour campaign would never have shown.
+
+A campaign owns its gold set for the same reason.
+`luatdo norms gold sample --campaign tax-2025` draws from the documents in scope and writes to a file named after it, and `score --campaign tax-2025` reads that file and no other, because a tax gold set appended to a labour one reports a precision figure about neither.
 
 The report leads with what the campaign has not reached, because a report that opens with the number of statements extracted invites the reader to take that as the number of statements in the corpus.
 
@@ -605,7 +629,9 @@ The labels stay where they are, `judge score` prints both keys under them, and i
 A prompt shown only by its own new number is indistinguishable from a prompt that was tuned until the number came out.
 
 `eval gates` is the same code the export path runs, so a campaign that fails it cannot ship by accident.
-`--force` exports anyway and says in as many words that the graph is not one to publish numbers from.
+`--force` exports the Neo4j dump anyway and says in as many words that the graph is not one to publish numbers from.
+It exists there because CSV files say nothing about how good they are, and a graph that fails a gate is still worth loading locally to see what is wrong with it.
+The LegalRuleML export takes the same flag and refuses it, which is the section below.
 
 The same flag scopes the dump as well as the gates:
 
@@ -626,6 +652,54 @@ The baselines are the two systems this project would have to beat to be worth bu
 Both answer 2 of the 23 competency questions from a layer that means what it says.
 The ablations remove one layer at a time from the full system, and the concept layer is worth 14 questions, the temporal layer 7, and conditions and exceptions 3.
 Those are counts of questions the design can answer, not of answers checked against a gold set, and the report says which it is.
+
+## Two other formats
+
+Choosing a property graph took on an interoperability debt, and this is where it gets paid.
+A norm has a bearer, an action, an object, conditions, exceptions, a deadline, a sanction, a modality, a confidence and an evidence quote, which is one node with properties in Neo4j and about a dozen triples in RDF, and carrying that shape through the working model would have been a cost with no return while nobody is federating with us.
+
+```sh
+luatdo export neo4j --campaign labour-2025
+luatdo export rdf
+```
+
+`export rdf` reads the CSV dump and not the store, and that ordering is the design rather than a shortcut.
+Generating RDF from the store would be a second working model, it would drift from the graph the moment either changed, and the first symptom would be somebody quoting a figure from the RDF that the database disagrees with.
+Reading the dump means the RDF can hold nothing the graph does not, by construction rather than by discipline, and it also means there is no campaign flag here: the scoping decision was made one step earlier by the export that wrote the dump.
+On the labour campaign that is 769,249 triples from 136,289 nodes and 144,093 edges across 27 files in two seconds, with 8,337 edges reified because they carry properties a plain triple has nowhere to put.
+
+Two files come out and the split matters.
+`graph.nt` is the data in our vocabulary, and `vocabulary.ttl` is the claim that some of our terms are somebody else's.
+SKOS and Dublin Core are reused where the definition in the other vocabulary is the definition we would have written, and ELI is stated as `rdfs:subClassOf` rather than `owl:equivalentClass`, which is the weaker and the honest claim: every Document of ours is a legal resource, and we say nothing about whether every legal resource is one of ours.
+Whether a Vietnamese thông tư is an `eli:LegalResource` is a reading of somebody else's specification, so it lives in the file a consumer can decline to load.
+
+LegalRuleML is the other direction, and it is the one export that is gated.
+
+```sh
+luatdo export legalruleml --campaign labour-2025
+```
+
+A deontic operator in LegalRuleML is a claim that a rule engine may act on this.
+Every statement here was read out of Vietnamese prose by a language model and checked by another one, the pass reports precision rather than proof, and wrapping that in an element named `lrml:Obligation` does not make it more certain than it was in the JSON it came from.
+It does make it look more certain, and a formalism is read as a guarantee by people who never saw how it was produced.
+
+So the release gates decide and there is no way past them.
+`--force` is accepted by the command and does nothing, which is deliberate: the Neo4j dump says nothing on its face about how good it is and is loaded by the person who made it, and a rule base says something on every line and is read by somebody who was not there.
+On the corpus as it stands this refuses, and the refusal is the correct answer rather than a placeholder.
+
+```text
+evidence           pass     1.000 (335 of 335)  floor 1.000
+bearer-placement   pass     1.000 (273 of 273)  floor 0.900
+judge-agreement    FAIL     -0.120 (50 of 50)  floor 0.400
+export blocked:
+  judge-agreement is -0.120 and the floor is 0.400, which protects: the precision figures in every report were produced by this judge
+```
+
+Three more rules hold in the writer itself.
+Only records the judge entailed or a person approved are written, and an untrusted record is refused by identifier rather than dropped quietly, because a caller who asked for their campaign and got a shorter file would believe they exported it.
+A definition becomes an `lrml:ConstitutiveStatement` and never gets a deontic operator, and sanctions, procedure steps and exceptions are counted and named as skipped rather than invented as statements, since each of those is part of another norm and is written on that norm.
+What the pipeline did not formalise is carried as text under a named relation instead of being turned into a predicate: a condition becomes a `ruleml:Atom` over `luatdo:condition` holding the words the drafter used, an exception the same under `ruleml:Naf`, and the file says in its own header that a consumer cannot evaluate the qualification and must not treat the rule as unconditional.
+A deadline is the one qualification that does come apart, and its calendar survives into the file, because five working days read as five days is a wrong answer that looks like a right one.
 
 ## Where the models come from
 

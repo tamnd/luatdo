@@ -17,8 +17,11 @@ import (
 	"github.com/tamnd/luatdo/fetch"
 	"github.com/tamnd/luatdo/graph"
 	"github.com/tamnd/luatdo/law"
+	"github.com/tamnd/luatdo/legalruleml"
+	"github.com/tamnd/luatdo/norm"
 	"github.com/tamnd/luatdo/ontology"
 	"github.com/tamnd/luatdo/parse"
+	"github.com/tamnd/luatdo/rdf"
 	"github.com/tamnd/luatdo/relation"
 	"github.com/tamnd/luatdo/store"
 	"github.com/tamnd/luatdo/subject"
@@ -31,7 +34,7 @@ func init() {
 		command{"parse", "parse raw documents into the canonical model", cmdParse},
 		command{"cite", "resolve citation and amendment links", cmdCite},
 		command{"anchor", "locate definitions articles and harvest alias declarations", cmdAnchor},
-		command{"export", "project the store into Neo4j", cmdExport},
+		command{"export", "project the store into Neo4j, and the dump into RDF", cmdExport},
 		command{"coverage", "report pipeline state recomputed from disk", cmdCoverage},
 	)
 }
@@ -371,12 +374,23 @@ func cmdExport(args []string) error {
 	if err != nil {
 		return err
 	}
-	if sub != "neo4j" || len(rest) > 0 {
-		return fmt.Errorf("usage: luatdo export neo4j [--merge|--check] [--campaign <name>]")
+	switch sub {
+	case "neo4j", "rdf", "legalruleml":
+	default:
+		sub = ""
+	}
+	if sub == "" || len(rest) > 0 {
+		return fmt.Errorf("usage: luatdo export neo4j [--merge|--check] [--campaign <name>], luatdo export rdf, or luatdo export legalruleml --campaign <name>")
 	}
 	s, err := openStore(*dataDir)
 	if err != nil {
 		return err
+	}
+	switch sub {
+	case "rdf":
+		return exportRDF(s)
+	case "legalruleml":
+		return exportLegalRuleML(s, *scope, *force)
 	}
 	docs, err := loadDocs(s)
 	if err != nil {
@@ -474,6 +488,106 @@ func cmdExport(args []string) error {
 	}
 	fmt.Printf("export neo4j: %s\n", summary)
 	fmt.Printf("wrote %s, run import.sh or import.cmd there, then apply schema.cypher\n", dir)
+	return nil
+}
+
+// exportRDF projects the CSV dump into N-Triples.
+//
+// It reads the dump and not the store, which is the whole point of the rdf
+// package and is worth restating at the call site: whatever the last neo4j
+// export wrote is what this projects, so the RDF cannot hold a node the graph
+// does not. If the dump is stale the RDF is stale in exactly the same way, and
+// that is better than being fresh in a way nothing else agrees with.
+//
+// There is no campaign flag here for the same reason. The scoping decision is
+// made one step earlier by the export that wrote the dump, and a flag here
+// would let somebody ask for a labour RDF over a corpus dump and get a file
+// that says labour on the command line and holds everything.
+func exportRDF(s *store.Store) error {
+	dump := filepath.Join(s.Export(), "neo4j")
+	out := filepath.Join(s.Export(), "rdf")
+	summary, err := rdf.Export(dump, out)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("export rdf: %s\n", summary)
+	fmt.Printf("wrote %s, graph.nt is the data and vocabulary.ttl is the alignment you can decline to load\n", out)
+	return nil
+}
+
+// exportLegalRuleML writes one campaign's trusted norms as LegalRuleML.
+//
+// It takes --force and refuses it. The neo4j export has one because a graph
+// that fails a gate is still worth loading locally to see what is wrong with
+// it, and the CSVs say nothing about how good they are. A LegalRuleML file says
+// something about how good it is on every line: an lrml:Obligation is a claim
+// that a rule engine may act on this, the file is meant to leave the building,
+// and a person who receives one has no way of knowing that whoever produced it
+// passed a flag. So the gate is the whole feature, and a flag that turned it
+// off would be the feature removed.
+//
+// The refusal is not a placeholder either. On the corpus as it stands the judge
+// agreement gate fails, which means the second opinion behind every entailed
+// verdict has not been shown to agree with a person, and a rule base built on
+// that would be exactly the false certainty this format invites.
+func exportLegalRuleML(s *store.Store, scope string, force bool) error {
+	if scope == "" {
+		return fmt.Errorf("usage: luatdo export legalruleml --campaign <name>, one of: %s",
+			strings.Join(campaign.ScopeNames(), ", "))
+	}
+	sc, err := campaign.LookupScope(scope)
+	if err != nil {
+		return err
+	}
+	v, err := gateVerdict(s, scope)
+	if err != nil {
+		return err
+	}
+	if ok, reasons := v.Ship(); !ok {
+		fmt.Print(v)
+		if force {
+			fmt.Println("--force does nothing here, a rule base is read as a guarantee and there is nobody downstream to tell")
+		}
+		return fmt.Errorf("release gates failed on %d of %d checks, so this campaign does not get a formalism", len(reasons), len(v.Results))
+	}
+	records, err := loadTrusted(s)
+	if err != nil {
+		return err
+	}
+	_, inScope, err := campaignDocs(s, sc)
+	if err != nil {
+		return err
+	}
+	var kept []norm.Record
+	for _, r := range records {
+		if inScope[r.DocID] && r.Trusted() {
+			kept = append(kept, r)
+		}
+	}
+	if len(kept) == 0 {
+		return fmt.Errorf("campaign %s has no trusted statements to formalise, run luatdo run --campaign %s then luatdo build", sc.Name, sc.Name)
+	}
+	dir := filepath.Join(s.Export(), "legalruleml")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	path := filepath.Join(dir, sc.Name+".xml")
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+	summary, err := legalruleml.Export(f, legalruleml.Input{
+		Campaign: sc.Name, Note: sc.Note, Records: kept,
+	})
+	if err != nil {
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	fmt.Print(summary)
+	fmt.Printf("wrote %s\n", path)
 	return nil
 }
 

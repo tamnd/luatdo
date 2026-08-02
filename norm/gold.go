@@ -20,6 +20,22 @@ import (
 // GoldFile is the annotated clause file inside the norm gold directory.
 const GoldFile = "gold_norms.jsonl"
 
+// GoldPath is where one campaign's annotations live.
+//
+// A gold set belongs to the campaign it was drawn from. The first one was drawn
+// over the whole corpus before there was a second campaign to tell it apart
+// from, and it keeps the unqualified name so nothing that already exists has to
+// be moved. A campaign named here gets its own file, because a tax gold set
+// appended to a labour one measures neither: precision would be reported over a
+// mixture, and the number a person would then quote is about a corpus slice
+// nobody chose.
+func GoldPath(dir, campaign string) string {
+	if campaign == "" {
+		return filepath.Join(dir, GoldFile)
+	}
+	return filepath.Join(dir, "gold_norms_"+campaign+".jsonl")
+}
+
 // The senses of the word được, which is the single most consequential
 // ambiguity in Vietnamese legal drafting and the one this layer is measured on.
 //
@@ -71,14 +87,14 @@ type Gold struct {
 	Note        string `json:"note,omitempty"`
 }
 
-// ReadGold returns the annotated clauses.
-func ReadGold(dir string) ([]Gold, error) {
-	return store.ReadJSONL[Gold](filepath.Join(dir, GoldFile))
+// ReadGold returns one campaign's annotated clauses.
+func ReadGold(dir, campaign string) ([]Gold, error) {
+	return store.ReadJSONL[Gold](GoldPath(dir, campaign))
 }
 
 // WriteGold appends annotations.
-func WriteGold(dir string, gs []Gold) error {
-	return store.AppendJSONL(filepath.Join(dir, GoldFile), gs)
+func WriteGold(dir, campaign string, gs []Gold) error {
+	return store.AppendJSONL(GoldPath(dir, campaign), gs)
 }
 
 // CheckGold returns what is wrong with an annotation set, sorted.

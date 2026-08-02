@@ -54,6 +54,14 @@ type Scope struct {
 // The cut is on the issuing body and not on the instrument type, because a
 // decision is central when a ministry signs it and local when a province does,
 // and the type says nothing either way.
+// tax-2025 is the second campaign and it is picked for contrast rather than for
+// size. Labour law places duties on named parties in prose, which is the shape
+// the norm reader was built against. Tax law states rates, thresholds, filing
+// deadlines and computation rules, most of its content sits in appended
+// schedules rather than in numbered articles, and its instruments amend each
+// other several times a year. Every one of those is a way the pipeline can be
+// wrong that a second labour campaign would never show, and a metric measured
+// on one domain is a metric about that domain until somebody runs a second one.
 var Scopes = map[string]Scope{
 	"labour-2025": {
 		Name:           "labour-2025",
@@ -61,6 +69,13 @@ var Scopes = map[string]Scope{
 		ExcludeIssuers: Provincial,
 		EffectiveFrom:  "2025-12-31",
 		Note:           "the labour code and the national instruments under it, in force through 2025",
+	},
+	"tax-2025": {
+		Name:           "tax-2025",
+		Subject:        "thue",
+		ExcludeIssuers: Provincial,
+		EffectiveFrom:  "2025-12-31",
+		Note:           "the tax and customs instruments a ministry or above issued, in force through 2025",
 	},
 }
 

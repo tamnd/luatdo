@@ -37,7 +37,7 @@ func vocabulary(t *testing.T, dir string) (labels, types map[string]bool) {
 		typeAt := slices.Index(rows[0], ":TYPE")
 		for _, row := range rows[1:] {
 			if labelAt >= 0 && labelAt < len(row) {
-				for _, label := range strings.Split(row[labelAt], ";") {
+				for _, label := range strings.Split(row[labelAt], arrayDelimiter) {
 					labels[label] = true
 				}
 			}
