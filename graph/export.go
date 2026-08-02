@@ -20,7 +20,9 @@ import (
 	"github.com/tamnd/luatdo/link"
 	"github.com/tamnd/luatdo/norm"
 	"github.com/tamnd/luatdo/ontology"
+	"github.com/tamnd/luatdo/relation"
 	"github.com/tamnd/luatdo/subject"
+	"github.com/tamnd/luatdo/temporal"
 	"github.com/tamnd/luatdo/term"
 )
 
@@ -41,6 +43,9 @@ CREATE FULLTEXT INDEX component_heading IF NOT EXISTS FOR (c:Component) ON EACH 
 CREATE FULLTEXT INDEX document_title IF NOT EXISTS FOR (d:Document) ON EACH [d.title, d.title_en];
 CREATE FULLTEXT INDEX term_text IF NOT EXISTS FOR (t:Term) ON EACH [t.text];
 CREATE CONSTRAINT norm_id IF NOT EXISTS FOR (n:Norm) REQUIRE n.id IS UNIQUE;
+CREATE CONSTRAINT condition_id IF NOT EXISTS FOR (n:Condition) REQUIRE n.id IS UNIQUE;
+CREATE CONSTRAINT exception_id IF NOT EXISTS FOR (n:Exception) REQUIRE n.id IS UNIQUE;
+CREATE CONSTRAINT sanction_id IF NOT EXISTS FOR (n:Sanction) REQUIRE n.id IS UNIQUE;
 CREATE CONSTRAINT term_use_id IF NOT EXISTS FOR (t:TermUse) REQUIRE t.id IS UNIQUE;
 CREATE CONSTRAINT merged_concept_id IF NOT EXISTS FOR (c:Concept) REQUIRE c.id IS UNIQUE;
 CREATE INDEX norm_type IF NOT EXISTS FOR (n:Norm) ON (n.norm_type);
@@ -51,6 +56,13 @@ CREATE INDEX term_use_role IF NOT EXISTS FOR (t:TermUse) ON (t.is_role);
 CREATE INDEX doc_effective IF NOT EXISTS FOR (d:Document) ON (d.effective_from);
 CREATE INDEX version_from IF NOT EXISTS FOR (v:TextVersion) ON (v.from_date);
 CREATE FULLTEXT INDEX term_use_text IF NOT EXISTS FOR (t:TermUse) ON EACH [t.label_vi, t.definition_vi];
+CREATE CONSTRAINT event_id IF NOT EXISTS FOR (e:Event) REQUIRE e.id IS UNIQUE;
+CREATE CONSTRAINT temporal_version_id IF NOT EXISTS FOR (v:TemporalVersion) REQUIRE v.id IS UNIQUE;
+CREATE INDEX event_date IF NOT EXISTS FOR (e:Event) ON (e.date);
+CREATE INDEX event_kind IF NOT EXISTS FOR (e:Event) ON (e.kind);
+CREATE INDEX temporal_version_component IF NOT EXISTS FOR (v:TemporalVersion) ON (v.component_id);
+CREATE INDEX temporal_version_interval IF NOT EXISTS FOR (v:TemporalVersion) ON (v.from_date, v.to_date);
+CREATE INDEX temporal_version_force IF NOT EXISTS FOR (v:TemporalVersion) ON (v.force);
 `
 
 // componentLabels is what a component node carries. law.ProvisionAlias rides
@@ -79,6 +91,13 @@ type Input struct {
 	// holds the designed vocabulary. Registry says what kinds of thing exist,
 	// the layer says which ones the corpus actually names.
 	Layer *concept.Layer
+	// Relations are concept to concept edges. They need Layer, since a relation
+	// between two concepts is nothing without the concepts, and the projection
+	// drops any edge whose endpoints this export did not write.
+	Relations []relation.Edge
+	// Temporal is the version graph: what each component said over which
+	// interval, and the events that closed one version and opened another.
+	Temporal *temporal.Layer
 }
 
 // Export writes the CSV projection into dir.
@@ -111,7 +130,7 @@ func Export(dir string, in Input) error {
 	if err := writeCSV(filepath.Join(dir, "components.csv"),
 		[]string{"id:ID", "kind", "number", "heading", "position:int", "renumbered_from", ":LABEL"},
 		func(w *csv.Writer) error {
-			return eachComponent(docs, func(c *law.Component) error {
+			return eachComponent(docs, func(_ *law.Document, c *law.Component) error {
 				return w.Write([]string{c.ID, c.Kind, c.Number, c.Heading, strconv.Itoa(c.Position), c.RenumberedFrom, componentLabels})
 			})
 		}); err != nil {
@@ -120,7 +139,7 @@ func Export(dir string, in Input) error {
 	if err := writeCSV(filepath.Join(dir, "text_versions.csv"),
 		[]string{"id:ID", "text", "text_hash", "from_date", "to_date", ":LABEL"},
 		func(w *csv.Writer) error {
-			return eachVersion(docs, func(v *law.TextVersion) error {
+			return eachVersion(docs, func(_ *law.Document, v *law.TextVersion) error {
 				return w.Write([]string{v.ID, v.Text, v.TextHash, v.FromDate, v.ToDate, "TextVersion"})
 			})
 		}); err != nil {
@@ -129,7 +148,7 @@ func Export(dir string, in Input) error {
 	if err := writeCSV(filepath.Join(dir, "has_version.csv"),
 		[]string{":START_ID", ":END_ID", ":TYPE"},
 		func(w *csv.Writer) error {
-			return eachVersion(docs, func(v *law.TextVersion) error {
+			return eachVersion(docs, func(_ *law.Document, v *law.TextVersion) error {
 				return w.Write([]string{v.ComponentID, v.ID, "HAS_VERSION"})
 			})
 		}); err != nil {
@@ -138,19 +157,12 @@ func Export(dir string, in Input) error {
 	if err := writeCSV(filepath.Join(dir, "contains.csv"),
 		[]string{":START_ID", ":END_ID", ":TYPE"},
 		func(w *csv.Writer) error {
-			for _, d := range docs {
-				for i := range d.Provisions {
-					p := &d.Provisions[i]
-					parent := p.ParentID
-					if parent == "" {
-						parent = d.ID
-					}
-					if err := w.Write([]string{parent, p.ID, "CONTAINS"}); err != nil {
-						return err
-					}
-				}
-			}
-			return nil
+			// One edge per component rather than one per provision. The two are
+			// the same list until a document numbers something twice, and then the
+			// provisions carry an edge into a node components.csv did not write.
+			return eachComponent(docs, func(d *law.Document, c *law.Component) error {
+				return w.Write([]string{containerOf(d, c), c.ID, "CONTAINS"})
+			})
 		}); err != nil {
 		return err
 	}
@@ -318,9 +330,10 @@ func Export(dir string, in Input) error {
 	if err := writeCSV(filepath.Join(dir, "norm_edges.csv"),
 		[]string{":START_ID", ":END_ID", ":TYPE"},
 		func(w *csv.Writer) error {
+			classes := registryClasses(in)
 			for i := range in.Statements {
 				r := &in.Statements[i]
-				if err := eachNormClass(r, func(classID, relType string) error {
+				if err := eachNormClass(r, classes, func(classID, relType string) error {
 					return w.Write([]string{r.ID, classID, relType})
 				}); err != nil {
 					return err
@@ -401,7 +414,63 @@ func Export(dir string, in Input) error {
 		}); err != nil {
 		return err
 	}
+	if err := writeCSV(filepath.Join(dir, "relations.csv"),
+		[]string{":START_ID", ":END_ID", "status", "source", "support:int", "support_docs:int",
+			"confidence:float", "direction", "quote", "provision_id", ":TYPE"},
+		func(w *csv.Writer) error {
+			return eachRelation(in, func(r relationRow) error {
+				return w.Write([]string{r.From, r.To, r.Status, r.Source,
+					strconv.Itoa(r.Support), strconv.Itoa(r.SupportDocs),
+					strconv.FormatFloat(r.Confidence, 'f', 2, 64), r.Direction,
+					r.Quote, r.ProvisionID, r.Type})
+			})
+		}); err != nil {
+		return err
+	}
+	if err := writeCSV(filepath.Join(dir, "about_concept.csv"),
+		[]string{":START_ID", ":END_ID", "role", ":TYPE"},
+		func(w *csv.Writer) error {
+			return eachNormConcept(in, func(normID, conceptID, role string) error {
+				return w.Write([]string{normID, conceptID, role, AboutConcept})
+			})
+		}); err != nil {
+		return err
+	}
+	if err := writeCSV(filepath.Join(dir, "events.csv"), nodeHeader(eventColumns, eventColumnTypes),
+		func(w *csv.Writer) error {
+			return eachEvent(in, func(e *temporal.Event) error {
+				row := append([]string{e.ID}, nodeValues(eventFields(e), eventColumns)...)
+				return w.Write(append(row, EventLabel))
+			})
+		}); err != nil {
+		return err
+	}
+	if err := writeCSV(filepath.Join(dir, "temporal_versions.csv"),
+		nodeHeader(temporalVersionColumns, temporalVersionColumnTypes),
+		func(w *csv.Writer) error {
+			return eachTemporalVersion(in, func(v *temporal.Version) error {
+				row := append([]string{v.ID}, nodeValues(temporalVersionFields(v), temporalVersionColumns)...)
+				return w.Write(append(row, TemporalVersionLabel))
+			})
+		}); err != nil {
+		return err
+	}
+	if err := writeCSV(filepath.Join(dir, "temporal_edges.csv"),
+		[]string{":START_ID", ":END_ID", ":TYPE"},
+		func(w *csv.Writer) error {
+			return eachTemporalEdge(in, func(from, to, relType string) error {
+				return w.Write([]string{from, to, relType})
+			})
+		}); err != nil {
+		return err
+	}
 	if err := os.WriteFile(filepath.Join(dir, "schema.cypher"), []byte(Schema), 0o644); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(dir, "style.grass"), []byte(Style), 0o644); err != nil {
+		return err
+	}
+	if err := writeQueryScripts(dir); err != nil {
 		return err
 	}
 	return writeImportScripts(dir)
@@ -472,7 +541,7 @@ func eachTermUseEdge(in Input, visit func(from, to, relType string) error) error
 	for _, d := range in.Docs {
 		components[d.ID] = true
 	}
-	if err := eachComponent(in.Docs, func(c *law.Component) error {
+	if err := eachComponent(in.Docs, func(_ *law.Document, c *law.Component) error {
 		components[c.ID] = true
 		return nil
 	}); err != nil {
@@ -511,14 +580,64 @@ func eachTermUseEdge(in Input, visit func(from, to, relType string) error) error
 	return nil
 }
 
+// splitOnce splits a document and keeps the first of any identifier the
+// document uses twice.
+//
+// The corpus uses them twice. A decision that promulgates a regulation
+// attached to it prints Điều 1 in the decision and Điều 1 again in the
+// regulation, and an amending decree restates clause 1 of article 1 of every
+// instrument it touches, which 140/2018/NĐ-CP does eleven times. An identifier
+// is built from the numbering, so both readings land on the same one. Across
+// the labour campaign that is 630 components in 94 of its 1239 documents.
+//
+// Folding them is the least bad of three options rather than a fix. MERGE
+// folds them already, silently, so the incremental path has always done this.
+// neo4j-admin does not fold them, it refuses the entire import over one
+// repeated identifier, so the offline path was failing outright on the same
+// corpus. Emitting each identifier once is what makes the two paths agree, and
+// Summary reports how many were folded so the number stays in front of
+// somebody. The fix is an identifier that tells an attached regulation apart
+// from the instrument carrying it, and that belongs in the parser.
+func splitOnce(d *law.Document) ([]law.Component, []law.TextVersion) {
+	components, versions := law.Split(d)
+	seen := make(map[string]bool, len(components))
+	keptComponents := components[:0]
+	for i := range components {
+		if seen[components[i].ID] {
+			continue
+		}
+		seen[components[i].ID] = true
+		keptComponents = append(keptComponents, components[i])
+	}
+	// A version identifier carries the text hash, so two readings of one
+	// provision that say different things keep both of their versions and hang
+	// them off the surviving component. That is what TextVersion is for. Only an
+	// exact repeat is dropped.
+	seenVersions := make(map[string]bool, len(versions))
+	keptVersions := versions[:0]
+	for i := range versions {
+		if seenVersions[versions[i].ID] {
+			continue
+		}
+		seenVersions[versions[i].ID] = true
+		keptVersions = append(keptVersions, versions[i])
+	}
+	return keptComponents, keptVersions
+}
+
 // eachComponent and eachVersion walk the split form of the corpus. Both call
-// law.Split rather than reading the provisions directly, so the projection and
-// the split cannot disagree about which provisions earn a version.
-func eachComponent(docs []*law.Document, visit func(*law.Component) error) error {
+// splitOnce rather than reading the provisions directly, so the projection and
+// the split cannot disagree about which provisions earn a version, and neither
+// writer can emit a node identifier the other one deduplicated.
+//
+// The document is handed to the callback because a top level component is
+// contained by its document rather than by another component, and the walker
+// is the only place that still knows which document a component came out of.
+func eachComponent(docs []*law.Document, visit func(*law.Document, *law.Component) error) error {
 	for _, d := range docs {
-		components, _ := law.Split(d)
+		components, _ := splitOnce(d)
 		for i := range components {
-			if err := visit(&components[i]); err != nil {
+			if err := visit(d, &components[i]); err != nil {
 				return err
 			}
 		}
@@ -526,16 +645,37 @@ func eachComponent(docs []*law.Document, visit func(*law.Component) error) error
 	return nil
 }
 
-func eachVersion(docs []*law.Document, visit func(*law.TextVersion) error) error {
+func eachVersion(docs []*law.Document, visit func(*law.Document, *law.TextVersion) error) error {
 	for _, d := range docs {
-		_, versions := law.Split(d)
+		_, versions := splitOnce(d)
 		for i := range versions {
-			if err := visit(&versions[i]); err != nil {
+			if err := visit(d, &versions[i]); err != nil {
 				return err
 			}
 		}
 	}
 	return nil
+}
+
+// collisions counts the components and versions splitOnce folded away, which is
+// a fact about the corpus rather than about the graph.
+func collisions(docs []*law.Document) (components, versions int) {
+	for _, d := range docs {
+		allComponents, allVersions := law.Split(d)
+		keptComponents, keptVersions := splitOnce(d)
+		components += len(allComponents) - len(keptComponents)
+		versions += len(allVersions) - len(keptVersions)
+	}
+	return components, versions
+}
+
+// containerOf is the node a component hangs under: the component above it, or
+// the document when there is nothing above it.
+func containerOf(d *law.Document, c *law.Component) string {
+	if c.ParentID != "" {
+		return c.ParentID
+	}
+	return d.ID
 }
 
 // eachAssignment visits every subject a document was filed under, skipping any
@@ -612,6 +752,19 @@ func eachNormDetail(records []norm.Record, visit func(normDetail) error) error {
 	return nil
 }
 
+// registryClasses is the set of class IDs this export writes as LegalConcept
+// nodes, which is what a participant edge has to land in.
+func registryClasses(in Input) map[string]bool {
+	out := map[string]bool{}
+	if in.Registry == nil {
+		return out
+	}
+	for _, c := range in.Registry.Classes {
+		out[c.ID] = true
+	}
+	return out
+}
+
 // eachNormClass visits the registry class each participant was placed in, with
 // the edge type that participant earns.
 //
@@ -619,7 +772,13 @@ func eachNormDetail(records []norm.Record, visit func(normDetail) error) error {
 // puts two actors in one provision and only one of them owes the duty, and a
 // projection that hangs both off HAS_BEARER answers question 9, which duties
 // the Labour Code places on employers, with the employees as well.
-func eachNormClass(r *norm.Record, visit func(classID, relType string) error) error {
+//
+// A participant placed in a class the registry no longer holds is skipped, for
+// the same reason eachRelation drops an edge into a missing concept: the
+// importer refuses the entire import over one row naming a node it does not
+// have. A statement extracted against an older registry is a thing that
+// happens, and it should cost that one edge rather than the whole graph.
+func eachNormClass(r *norm.Record, classes map[string]bool, visit func(classID, relType string) error) error {
 	s := &r.Statement
 	for _, p := range []struct {
 		ref     *norm.Ref
@@ -629,7 +788,7 @@ func eachNormClass(r *norm.Record, visit func(classID, relType string) error) er
 		{s.Counterparty, "HAS_COUNTERPARTY"},
 		{s.Object, "HAS_OBJECT"},
 	} {
-		if p.ref == nil || p.ref.ClassID == "" {
+		if p.ref == nil || p.ref.ClassID == "" || !classes[p.ref.ClassID] {
 			continue
 		}
 		if err := visit(p.ref.ClassID, p.relType); err != nil {
@@ -690,12 +849,14 @@ var normColumnTypes = map[string]string{
 	"evidence_end": "int", "confidence": "float", "ontology_version": "int",
 }
 
-// normHeader is the norms.csv header, built from the column list so the two
-// cannot disagree.
-func normHeader() []string {
+// nodeHeader builds a node file header from a column list and the type suffixes
+// of whichever columns are not strings, so a field added to the flattener and
+// forgotten in the column list shows up as a missing column rather than as
+// every value after it landing one column to the left.
+func nodeHeader(columns []string, types map[string]string) []string {
 	out := []string{"id:ID"}
-	for _, name := range normColumns {
-		if t, ok := normColumnTypes[name]; ok {
+	for _, name := range columns {
+		if t, ok := types[name]; ok {
 			name += ":" + t
 		}
 		out = append(out, name)
@@ -703,12 +864,11 @@ func normHeader() []string {
 	return append(out, ":LABEL")
 }
 
-// normValues renders the fields in column order.
-func normValues(r *norm.Record) []string {
-	f := normFields(r)
-	out := make([]string, 0, len(normColumns))
-	for _, name := range normColumns {
-		switch v := f[name].(type) {
+// nodeValues renders a flattened node in column order.
+func nodeValues(fields map[string]any, columns []string) []string {
+	out := make([]string, 0, len(columns))
+	for _, name := range columns {
+		switch v := fields[name].(type) {
 		case string:
 			out = append(out, v)
 		case int:
@@ -721,6 +881,13 @@ func normValues(r *norm.Record) []string {
 	}
 	return out
 }
+
+// normHeader is the norms.csv header, built from the column list so the two
+// cannot disagree.
+func normHeader() []string { return nodeHeader(normColumns, normColumnTypes) }
+
+// normValues renders the fields in column order.
+func normValues(r *norm.Record) []string { return nodeValues(normFields(r), normColumns) }
 
 func writeCSV(path string, header []string, body func(*csv.Writer) error) error {
 	f, err := os.Create(path)
@@ -744,20 +911,33 @@ func writeCSV(path string, header []string, body func(*csv.Writer) error) error 
 
 // writeImportScripts writes the neo4j-admin invocation for both shells, so
 // the export directory works on the Linux servers and the Windows machine.
+//
+// multiline-fields is not optional and not a tuning knob. A provision is a
+// paragraph of Vietnamese and it contains newlines, so text_versions.csv has
+// quoted fields that span lines, and the importer defaults to refusing those.
+// Every real dump failed on it in under a second with a message about a field
+// spanning multiple lines, while the fixture, whose text is one line, imported
+// fine.
+//
+// The importer also writes import.report next to the data, so the dump has to
+// be run from a directory somebody can write to.
 func writeImportScripts(dir string) error {
-	args := `database import full luatdo --overwrite-destination --array-delimiter="` + arrayDelimiter + `" ` +
+	args := `database import full luatdo --overwrite-destination --multiline-fields=true --array-delimiter="` + arrayDelimiter + `" ` +
 		`--nodes=documents.csv --nodes=components.csv --nodes=text_versions.csv ` +
 		`--nodes=terms.csv --nodes=concepts.csv --nodes=subjects.csv ` +
 		`--nodes=norms.csv --nodes=norm_details.csv ` +
 		`--nodes=term_uses.csv --nodes=merged_concepts.csv ` +
+		`--nodes=events.csv --nodes=temporal_versions.csv ` +
 		`--relationships=contains.csv --relationships=has_version.csv --relationships=cites.csv ` +
 		`--relationships=defines.csv --relationships=mentions.csv ` +
 		`--relationships=subject_parents.csv --relationships=about_subject.csv ` +
 		`--relationships=has_norm.csv --relationships=norm_edges.csv ` +
 		`--relationships=instance_of.csv --relationships=differs_from.csv ` +
-		`--relationships=term_use_edges.csv`
-	sh := "#!/bin/sh\n# Run from this directory with the database stopped.\nneo4j-admin " + args + "\n"
-	cmd := "@echo off\r\nrem Run from this directory with the database stopped.\r\nneo4j-admin " + args + "\r\n"
+		`--relationships=term_use_edges.csv ` +
+		`--relationships=relations.csv --relationships=about_concept.csv ` +
+		`--relationships=temporal_edges.csv`
+	sh := "#!/bin/sh\n# Run from this directory, which must be writable, with the database stopped.\nneo4j-admin " + args + "\n"
+	cmd := "@echo off\r\nrem Run from this directory, which must be writable, with the database stopped.\r\nneo4j-admin " + args + "\r\n"
 	if err := os.WriteFile(filepath.Join(dir, "import.sh"), []byte(sh), 0o755); err != nil {
 		return err
 	}
@@ -769,16 +949,28 @@ type Summary struct {
 	Documents    int `json:"documents"`
 	Components   int `json:"components"`
 	TextVersions int `json:"text_versions"`
-	Contains     int `json:"contains"`
-	Cites        int `json:"cites"`
-	Unresolved   int `json:"unresolved"`
-	Terms        int `json:"terms"`
-	Defines      int `json:"defines"`
-	Concepts     int `json:"concepts"`
-	Mentions     int `json:"mentions"`
-	Subjects     int `json:"subjects"`
-	AboutSubject int `json:"about_subject"`
-	Norms        int `json:"norms"`
+	// FoldedComponents and FoldedVersions are what the projection dropped
+	// because a document used one identifier for two things. They are facts
+	// about the corpus, like Unresolved, and never counted against a database:
+	// a folded component is a node nobody wrote, not a node that went missing.
+	FoldedComponents int `json:"folded_components"`
+	FoldedVersions   int `json:"folded_versions"`
+	Contains         int `json:"contains"`
+	Cites            int `json:"cites"`
+	Unresolved       int `json:"unresolved"`
+	Terms            int `json:"terms"`
+	Defines          int `json:"defines"`
+	Concepts         int `json:"concepts"`
+	Mentions         int `json:"mentions"`
+	Subjects         int `json:"subjects"`
+	AboutSubject     int `json:"about_subject"`
+	Norms            int `json:"norms"`
+	// NormEdges is every edge hanging off a Norm: the provision it came from in
+	// both directions, the participants, and the conditions, exceptions and
+	// sanctions. It is one number rather than eight because what it is for is
+	// catching a merge that wrote the nodes and dropped the edges, and eight
+	// counters would say the same thing eight times.
+	NormEdges int `json:"norm_edges"`
 	// TermUses and MergedConcepts are counted apart on purpose. The gap between
 	// them is the work: every term use is discovered, every concept was created
 	// by somebody deciding two of them are the same thing, and a report that
@@ -788,20 +980,37 @@ type Summary struct {
 	InstanceOf     int `json:"instance_of"`
 	DiffersFrom    int `json:"differs_from"`
 	TermUseEdges   int `json:"term_use_edges"`
+
+	// Relations counts only what reached the graph. Provisional counts what the
+	// layer holds and the projection refused, and the two are printed together
+	// because a graph with 40 canonical edges out of 900 is a different object
+	// from one with 40 out of 41.
+	Relations   int `json:"relations"`
+	Provisional int `json:"provisional"`
+
+	// AboutConcept is the join between the norm layer and the concept layer, and
+	// the number to look at first. Zero means the two layers are in the same
+	// database and share nothing, which is where this projection started.
+	AboutConcept int `json:"about_concept"`
+
+	Events           int `json:"events"`
+	TemporalVersions int `json:"temporal_versions"`
+	TemporalEdges    int `json:"temporal_edges"`
 }
 
 // Summarize counts the projection without writing it.
 func Summarize(in Input) Summary {
 	s := Summary{Documents: len(in.Docs)}
-	_ = eachComponent(in.Docs, func(*law.Component) error {
+	_ = eachComponent(in.Docs, func(*law.Document, *law.Component) error {
 		s.Components++
 		s.Contains++
 		return nil
 	})
-	_ = eachVersion(in.Docs, func(*law.TextVersion) error {
+	_ = eachVersion(in.Docs, func(*law.Document, *law.TextVersion) error {
 		s.TextVersions++
 		return nil
 	})
+	s.FoldedComponents, s.FoldedVersions = collisions(in.Docs)
 	if in.Vocabulary != nil {
 		s.Subjects = len(in.Vocabulary.Subjects)
 	}
@@ -831,6 +1040,20 @@ func Summarize(in Input) Summary {
 		}
 	}
 	s.Norms = len(in.Statements)
+	// Every statement earns a HAS_NORM from its provision and a HAS_LEGAL_BASIS
+	// back to it. The rest depend on what the extractor found.
+	s.NormEdges = 2 * len(in.Statements)
+	classes := registryClasses(in)
+	for i := range in.Statements {
+		_ = eachNormClass(&in.Statements[i], classes, func(string, string) error {
+			s.NormEdges++
+			return nil
+		})
+	}
+	_ = eachNormDetail(in.Statements, func(normDetail) error {
+		s.NormEdges++
+		return nil
+	})
 	if in.Layer != nil {
 		s.TermUses = len(in.Layer.TermUses)
 		s.MergedConcepts = len(in.Layer.Concepts)
@@ -841,12 +1064,37 @@ func Summarize(in Input) Summary {
 		s.TermUseEdges++
 		return nil
 	})
+	_ = eachRelation(in, func(relationRow) error {
+		s.Relations++
+		return nil
+	})
+	s.Provisional = len(in.Relations) - s.Relations
+	_ = eachNormConcept(in, func(string, string, string) error {
+		s.AboutConcept++
+		return nil
+	})
+	_ = eachEvent(in, func(*temporal.Event) error {
+		s.Events++
+		return nil
+	})
+	_ = eachTemporalVersion(in, func(*temporal.Version) error {
+		s.TemporalVersions++
+		return nil
+	})
+	_ = eachTemporalEdge(in, func(string, string, string) error {
+		s.TemporalEdges++
+		return nil
+	})
 	return s
 }
 
 func (s Summary) String() string {
 	out := fmt.Sprintf("documents %d, components %d, versions %d, contains %d, cites %d, unresolved %d",
 		s.Documents, s.Components, s.TextVersions, s.Contains, s.Cites, s.Unresolved)
+	if s.FoldedComponents > 0 || s.FoldedVersions > 0 {
+		out += fmt.Sprintf(", folded %d components and %d versions onto identifiers their own document had already used",
+			s.FoldedComponents, s.FoldedVersions)
+	}
 	if s.Terms > 0 {
 		out += fmt.Sprintf(", terms %d, defines %d", s.Terms, s.Defines)
 	}
@@ -860,11 +1108,21 @@ func (s Summary) String() string {
 		out += fmt.Sprintf(", mentions %d", s.Mentions)
 	}
 	if s.Norms > 0 {
-		out += fmt.Sprintf(", norms %d", s.Norms)
+		out += fmt.Sprintf(", norms %d, norm edges %d", s.Norms, s.NormEdges)
 	}
 	if s.TermUses > 0 {
 		out += fmt.Sprintf(", term uses %d, merged concepts %d, instance of %d, differs from %d",
 			s.TermUses, s.MergedConcepts, s.InstanceOf, s.DiffersFrom)
+	}
+	if s.Relations > 0 || s.Provisional > 0 {
+		out += fmt.Sprintf(", relations %d canonical, %d still provisional and not exported",
+			s.Relations, s.Provisional)
+	}
+	if s.Norms > 0 && s.MergedConcepts > 0 {
+		out += fmt.Sprintf(", norms joined to concepts %d", s.AboutConcept)
+	}
+	if s.Events > 0 || s.TemporalVersions > 0 {
+		out += fmt.Sprintf(", events %d, temporal versions %d", s.Events, s.TemporalVersions)
 	}
 	return out
 }
