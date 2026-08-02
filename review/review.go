@@ -49,8 +49,19 @@ func Reasons(rec *norm.Record) []string {
 	if rec.Statement.Confidence < ConfidenceGate {
 		out = append(out, fmt.Sprintf("confidence %.2f below %.2f", rec.Statement.Confidence, ConfidenceGate))
 	}
-	if rec.Statement.Type == "sanction" || rec.Statement.Sanction != "" {
+	if rec.Statement.Type == "sanction" || rec.Statement.Sanction != nil {
 		out = append(out, "sanction extracted")
+	}
+	// A sanction whose basis names another instrument is an edge across
+	// documents, and a wrong one points at a penalty that does not exist. Those
+	// go to a human whatever the confidence said.
+	if s := rec.Statement.Sanction; s != nil && s.BasisDoc != "" && s.BasisDoc != rec.DocID {
+		out = append(out, "sanction basis in another document")
+	}
+	// A bearer the extractor could not place in the registry is question 10's
+	// exact case: nobody downstream can tell a drafting defect from a miss.
+	if b := rec.Statement.Bearer; b != nil && b.ClassID == "" {
+		out = append(out, "bearer not placed in the registry")
 	}
 	if len(rec.Statement.Exceptions) > 0 {
 		out = append(out, "exception detected")

@@ -178,38 +178,23 @@ func Merge(ctx context.Context, target Target, in Input) error {
 	normEdgeRows := map[string][]map[string]any{}
 	for i := range in.Statements {
 		r := &in.Statements[i]
-		s := &r.Statement
-		subject, object := "", ""
-		if s.Subject != nil {
-			subject = s.Subject.Text
-		}
-		if s.Object != nil {
-			object = s.Object.Text
-		}
-		verdict := ""
-		if r.Entailment != nil {
-			verdict = r.Entailment.Verdict
-		}
-		normRows = append(normRows, map[string]any{
-			"id": r.ID, "norm_type": s.Type, "modality": s.Modality,
-			"subject": subject, "action": s.Action.Text, "object": object,
-			"deadline": s.Deadline, "sanction": s.Sanction,
-			"evidence_quote": s.Evidence.Quote, "evidence_start": s.Evidence.Start,
-			"evidence_end": s.Evidence.End, "confidence": s.Confidence,
-			"verdict": verdict, "model": r.Model, "ontology_version": r.OntologyVersion,
-		})
+		row := normFields(r)
+		row["id"] = r.ID
+		normRows = append(normRows, row)
 		hasNormRows = append(hasNormRows, map[string]any{"from": r.ProvisionID, "to": r.ID})
 		normEdgeRows["HAS_LEGAL_BASIS"] = append(normEdgeRows["HAS_LEGAL_BASIS"], map[string]any{"from": r.ID, "to": r.ProvisionID})
-		if s.Subject != nil && s.Subject.ClassID != "" {
-			normEdgeRows["HAS_BEARER"] = append(normEdgeRows["HAS_BEARER"], map[string]any{"from": r.ID, "to": s.Subject.ClassID})
-		}
-		if s.Object != nil && s.Object.ClassID != "" {
-			normEdgeRows["HAS_OBJECT"] = append(normEdgeRows["HAS_OBJECT"], map[string]any{"from": r.ID, "to": s.Object.ClassID})
+		if err := eachNormClass(r, func(classID, relType string) error {
+			normEdgeRows[relType] = append(normEdgeRows[relType], map[string]any{"from": r.ID, "to": classID})
+			return nil
+		}); err != nil {
+			return err
 		}
 	}
-	if err := eachNormDetail(in.Statements, func(id, text, label, normID, relType string) error {
-		detailRows[label] = append(detailRows[label], map[string]any{"id": id, "text": text})
-		normEdgeRows[relType] = append(normEdgeRows[relType], map[string]any{"from": normID, "to": id})
+	if err := eachNormDetail(in.Statements, func(d normDetail) error {
+		detailRows[d.Label] = append(detailRows[d.Label], map[string]any{
+			"id": d.ID, "text": d.Text, "kind": d.Kind, "quote": d.Quote, "legal_basis": d.Basis,
+		})
+		normEdgeRows[d.RelType] = append(normEdgeRows[d.RelType], map[string]any{"from": d.NormID, "to": d.ID})
 		return nil
 	}); err != nil {
 		return err
@@ -321,10 +306,10 @@ func Merge(ctx context.Context, target Target, in Input) error {
 	// Detail node labels and norm relationship types are static per query, so
 	// each group gets its own MERGE instead of a dynamic-label procedure.
 	for _, label := range []string{"Condition", "Exception", "Sanction"} {
-		steps = append(steps, step{"UNWIND $rows AS r MERGE (n:" + label + " {id: r.id}) SET n.text = r.text", detailRows[label]})
+		steps = append(steps, step{"UNWIND $rows AS r MERGE (n:" + label + " {id: r.id}) SET n += r", detailRows[label]})
 	}
 	steps = append(steps, step{"UNWIND $rows AS r MATCH (a {id: r.from}), (b {id: r.to}) MERGE (a)-[:HAS_NORM]->(b)", hasNormRows})
-	for _, relType := range []string{"HAS_LEGAL_BASIS", "HAS_BEARER", "HAS_OBJECT", "HAS_CONDITION", "HAS_EXCEPTION", "HAS_SANCTION"} {
+	for _, relType := range []string{"HAS_LEGAL_BASIS", "HAS_BEARER", "HAS_COUNTERPARTY", "HAS_OBJECT", "HAS_CONDITION", "HAS_EXCEPTION", "HAS_SANCTION"} {
 		steps = append(steps, step{"UNWIND $rows AS r MATCH (a {id: r.from}), (b {id: r.to}) MERGE (a)-[:" + relType + "]->(b)", normEdgeRows[relType]})
 	}
 	steps = append(steps,

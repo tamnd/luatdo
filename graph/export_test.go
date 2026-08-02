@@ -234,14 +234,16 @@ func TestExportNorms(t *testing.T) {
 		DocID:       docs[0].ID,
 		ProvisionID: docs[0].Provisions[1].ID,
 		Statement: norm.Statement{
-			Type:       "duty",
-			Subject:    &norm.Ref{Text: "người sử dụng lao động", ClassID: "vn-legal:Employer"},
-			Action:     norm.Ref{Text: "trả lương"},
-			Conditions: []string{"khi đến kỳ hạn"},
-			Exceptions: []string{"trừ trường hợp bất khả kháng"},
-			Sanction:   "phạt tiền",
-			Evidence:   norm.Evidence{Quote: "phải trả lương", Start: 10, End: 30},
-			Confidence: 0.94,
+			Type:         "duty",
+			Bearer:       &norm.Ref{Text: "người sử dụng lao động", ClassID: "vn-legal:Employer", IsActor: true},
+			Counterparty: &norm.Ref{Text: "người lao động", ClassID: "vn-legal:Employee", IsActor: true},
+			Action:       norm.Ref{Text: "trả lương"},
+			Conditions:   []norm.Clause{{Kind: norm.CondTemporal, Text: "khi đến kỳ hạn", Quote: "khi đến kỳ hạn"}},
+			Exceptions:   []norm.Clause{{Kind: norm.ExcForce, Text: "bất khả kháng", Quote: "trừ trường hợp bất khả kháng"}},
+			Deadline:     &norm.Deadline{Text: "trong thời hạn 05 ngày làm việc", Value: 5, Unit: norm.UnitDay, Calendar: norm.CalendarWorking},
+			Sanction:     &norm.Sanction{Text: "phạt tiền", Quote: "bị phạt tiền", LegalBasis: "Điều 17 Nghị định số 12/2022/NĐ-CP"},
+			Evidence:     norm.Evidence{Quote: "phải trả lương", Start: 10, End: 30},
+			Confidence:   0.94,
 		},
 		Status:          "verified",
 		Entailment:      &norm.Judgment{Verdict: norm.VerdictEntailed},
@@ -257,14 +259,42 @@ func TestExportNorms(t *testing.T) {
 	if len(norms) != 2 {
 		t.Fatalf("norms.csv rows = %d, want header plus 1", len(norms))
 	}
-	row := norms[1]
-	if row[0] != "vn:norm:abc123" || row[1] != "duty" || row[12] != "entailed" || row[13] != "test-model" {
-		t.Errorf("norm row = %v, provenance must ride on the node", row)
+	// Columns are looked up by name rather than by position, because the schema
+	// moves and a test that counts columns fails somewhere other than where the
+	// mistake is.
+	col := func(name string) string {
+		for i, h := range norms[0] {
+			if h == name || strings.HasPrefix(h, name+":") {
+				return norms[1][i]
+			}
+		}
+		t.Fatalf("norms.csv has no column %q, header is %v", name, norms[0])
+		return ""
+	}
+	if norms[1][0] != "vn:norm:abc123" || col("norm_type") != "duty" {
+		t.Errorf("norm row = %v", norms[1])
+	}
+	if col("verdict") != "entailed" || col("model") != "test-model" {
+		t.Error("provenance must ride on the node")
+	}
+	if col("bearer") != "người sử dụng lao động" || col("counterparty") != "người lao động" {
+		t.Errorf("bearer = %q, counterparty = %q, the two must not be folded together", col("bearer"), col("counterparty"))
+	}
+	if col("deadline_value") != "5" || col("deadline_calendar") != norm.CalendarWorking {
+		t.Errorf("deadline projected as %q %q, question 12 needs both", col("deadline_value"), col("deadline_calendar"))
 	}
 
 	details := readCSV(t, filepath.Join(dir, "norm_details.csv"))
 	if len(details) != 4 {
-		t.Errorf("norm_details.csv rows = %d, want condition, exception, and sanction", len(details))
+		t.Fatalf("norm_details.csv rows = %d, want condition, exception, and sanction", len(details))
+	}
+	for _, d := range details[1:] {
+		if d[3] == "" {
+			t.Errorf("detail %v carries no quote, so nobody can check it against the provision", d)
+		}
+		if d[5] == "Sanction" && d[4] == "" {
+			t.Error("a sanction node without its legal basis is a summary, not a fact")
+		}
 	}
 
 	hasNorm := readCSV(t, filepath.Join(dir, "has_norm.csv"))
@@ -277,7 +307,7 @@ func TestExportNorms(t *testing.T) {
 	for _, e := range edges[1:] {
 		types[e[2]]++
 	}
-	for _, want := range []string{"HAS_BEARER", "HAS_LEGAL_BASIS", "HAS_CONDITION", "HAS_EXCEPTION", "HAS_SANCTION"} {
+	for _, want := range []string{"HAS_BEARER", "HAS_COUNTERPARTY", "HAS_LEGAL_BASIS", "HAS_CONDITION", "HAS_EXCEPTION", "HAS_SANCTION"} {
 		if types[want] != 1 {
 			t.Errorf("edge %s count = %d, want 1", want, types[want])
 		}

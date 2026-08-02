@@ -100,6 +100,7 @@ RETURN path
 | `luatdo extract` | Schema-constrained LLM extraction of entity mentions under the closed registry |
 | `luatdo link` | Resolve mentions against the registry and the defined term table, with scores |
 | `luatdo norms` | Extract norm statements and verify them with the entailment judge |
+| `luatdo ask` | Answer the norm competency questions over the trusted store |
 | `luatdo temporal` | Read amending instructions, build the version graph, and answer questions at a date |
 | `luatdo prompt` | Print the exact prompt for a provision without calling a model |
 | `luatdo review` | Work the human review queue for gated statements |
@@ -107,6 +108,7 @@ RETURN path
 | `luatdo export neo4j` | Project the trusted store into Neo4j, full import or incremental merge |
 | `luatdo coverage` | Report what is parsed, extracted, verified, and exported, recomputed from disk |
 | `luatdo run` | The campaign: work the coverage queue with parallel workers until it is empty |
+| `luatdo campaign` | Scope a named campaign and report what it has covered |
 | `luatdo doctor` | Probe model routes and report which are alive, and what the store holds |
 
 Identifiers are structural and reproducible, never generated:
@@ -410,6 +412,65 @@ There is no random source in it.
 Each document is ranked inside its stratum by a hash of the seed and its identifier, so two machines agree on what a seed produces, and a corpus that gained a document keeps almost every pick it had.
 The corpus falls into 966 strata, so a draw smaller than that reaches only the largest ones, and the command says so rather than letting the number look like coverage.
 
+## What a norm says
+
+A statement of law has parts, and the parts are the answer.
+Somebody has to do something, for or against somebody else, when certain things hold, unless certain other things hold, by a certain time, or else.
+Flatten that to a triple and the conditions go, and a duty whose condition was dropped is not a weaker fact but a false one.
+
+So a norm carries a bearer and a counterparty rather than a subject.
+The bearer is the party that must act, may act or is forbidden to act; the counterparty is the other side of the relation.
+Every reference that names a party is flagged as one, and a bearer the registry cannot place as a legal actor is a validation failure rather than a note in a log.
+
+Conditions and exceptions are objects with their own verbatim quotes and their own kinds, four of each.
+A condition is a precondition, a temporal condition, a threshold or a qualifying condition.
+An exception is a carve out, an override, a consented exception or force majeure.
+
+Deadlines are not asked for as numbers.
+A model asked for a number returns one for every phrase, including the phrases that have none, and a deadline of five that came from `trong thời hạn hợp lý` is worse than no deadline at all.
+The model copies the phrase and a grammar takes it apart, into a length or a fixed date, an anchor, and whether the days are working days or calendar days.
+That last distinction is the whole of competency question 12: five working days is seven calendar days, and a query that treats them as the same number answers with the wrong provisions.
+The grammar reads numbers written in words as well as in digits, because the older instruments spell them out and a parser that only reads digits goes blind on the 2006 law while working perfectly on the 2019 one.
+That is also why the trusted store is rebuilt from the extraction artifacts rather than edited in place: the deadline fields are derived from the phrase, so improving the grammar and running `luatdo build` again is enough, and no model is paid to read the same provisions twice.
+
+Sanctions carry a legal basis or they are not recorded.
+The basis is then resolved into a document identifier, which is what makes a prohibition in a law and the penalty for it in a decree two ends of one edge instead of two pieces of unconnected text.
+Procedures are grouped after extraction rather than during it, because a procedure's steps are read one provision at a time by calls that cannot see how many there are.
+
+### The word được
+
+`được` is the passive marker, the permission marker, and part of `được quyền`.
+`Người lao động được trả lương đúng hạn` is a right of the worker stated in the passive voice, not a permission granted to them, and the duty it implies sits on the employer.
+Read it as a permission and the obligation moves off the party that owes it, and every question about worker rights then answers with an empty set.
+
+It gets three defences and not one.
+The prompt states the three senses with an example of each.
+The gold subset annotates the sense of the word separately from the statements, so it is measured whether or not the extraction found the norm at all, and the draw oversamples clauses that use the word and says by how much.
+The score reports a confusion table rather than a rate, so the permission for right swap appears as a number with a name on it instead of hiding inside an accuracy that stays high.
+
+```sh
+luatdo norms gold sample -n 120 -duoc 60   # draw, then annotate by hand
+luatdo norms gold check                    # the ruler is checked harder than the thing it measures
+luatdo norms gold score
+```
+
+### Asking it questions
+
+```sh
+luatdo ask 9 vn-legal:Employer --doc vn:law:2019:45-2019-qh14
+luatdo ask 12 --days 5
+luatdo ask 13
+luatdo ask 15
+```
+
+Question 9 is the duties an instrument places on a kind of actor and which carry a consequence.
+Question 10 is the norms with nobody to owe them, split into the provisions that name no actor in their own words and the ones whose actor the extraction dropped, because one of those is fixed by rereading and the other never will be.
+Question 11 is a procedure as ordered steps with its deadlines, 12 is every deadline shorter than five working days with the actor who must meet it, 13 is the prohibitions nothing in the corpus punishes, 14 is what has to hold for one duty and what releases its bearer, and 15 is the norms that name an authority no provision ever resolves.
+
+Every answer says what it left out.
+Question 12 reports the deadlines it could not take apart, question 9 reports the duties with no consequence as a count and not just as rows, and question 13 reports the total it counted against.
+An answer that returns a clean list and says nothing about what it skipped reads as coverage, and it is not.
+
 ## Running a campaign
 
 A campaign is a long job against a metered service, so it is built to be interrupted.
@@ -438,6 +499,27 @@ An invented zero would quietly understate a campaign, so nothing invents one.
 The first interrupt drains: no new provision starts, the ones in flight finish and are written, and the accounting reports what actually ran.
 A second interrupt aborts.
 Every run writes a summary to `<data>/campaign/`, and `luatdo coverage --missing` prints what is left.
+
+### A named campaign
+
+A pass over all 128,097 documents measures the throughput of a queue and nothing else.
+The competency questions need one area of law end to end: question 13 asks which prohibitions nothing punishes, and that is meaningless unless the instruments that do the punishing are in the same pass as the ones that do the forbidding.
+
+So a campaign is a named slice, kept as data so a report written months later selects the same documents the run did.
+
+```sh
+luatdo campaign list
+luatdo campaign scope labour-2025
+luatdo run --campaign labour-2025 --parallel 6
+luatdo campaign report labour-2025
+```
+
+`labour-2025` is the labour code and every national instrument under it, in force through 2025: 1,239 documents and 36,371 extractable provisions, out of 4,563 documents in the labour subject.
+The cut is on the issuing body rather than the instrument type, because a decision is central when a ministry signs it and local when a province does, and the type says nothing either way.
+The 2,119 provincial documents it drops are two thirds of the subject by count and almost none of it by normative content.
+That is a statement about what the pass is for, and it is in the scope definition where a reader can argue with it.
+
+The report leads with what the campaign has not reached, because a report that opens with the number of statements extracted invites the reader to take that as the number of statements in the corpus.
 
 ## Where the models come from
 

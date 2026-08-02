@@ -95,7 +95,7 @@ func judgeInput(reg *ontology.Registry, w *Window, s *norm.Statement) (string, e
 	b.Write(stmt)
 	b.WriteString("\n")
 	classes := map[string]bool{}
-	for _, ref := range []*norm.Ref{s.Subject, &s.Action, s.Object} {
+	for _, ref := range []*norm.Ref{s.Bearer, s.Counterparty, &s.Action, s.Object} {
 		if ref == nil || ref.ClassID == "" || classes[ref.ClassID] {
 			continue
 		}

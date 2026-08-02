@@ -6,6 +6,7 @@
 package store
 
 import (
+	"bufio"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -13,6 +14,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // Store is a data directory.
@@ -102,6 +104,64 @@ func ReadJSON(path string, v any) error {
 		return err
 	}
 	return json.Unmarshal(data, v)
+}
+
+// ReadJSONL reads a file of one JSON object per line. A file nobody has
+// written is not an error: every stage that reads one is asking what an earlier
+// stage produced, and "nothing yet" is an answer.
+func ReadJSONL[T any](path string) ([]T, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	var out []T
+	scanner := bufio.NewScanner(f)
+	// A provision with its full text on one line is the largest row any stage
+	// writes, and the default 64 KB buffer is smaller than a long article.
+	scanner.Buffer(make([]byte, 0, 1<<20), 1<<22)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		var row T
+		if err := json.Unmarshal([]byte(line), &row); err != nil {
+			return nil, fmt.Errorf("read %s: %w", path, err)
+		}
+		out = append(out, row)
+	}
+	return out, scanner.Err()
+}
+
+// AppendJSONL appends rows to a file of one JSON object per line.
+//
+// This is the append-only half of the pair, for files that record what happened
+// rather than what is currently true: annotations, decisions, queues. Nothing
+// rewrites them, so a crash mid-run loses the row being written and not the
+// ones before it.
+func AppendJSONL[T any](path string, rows []T) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+	enc := json.NewEncoder(f)
+	for _, r := range rows {
+		if err := enc.Encode(r); err != nil {
+			return err
+		}
+	}
+	return f.Close()
 }
 
 // HashFile returns the hex SHA-256 of the file at path.

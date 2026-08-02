@@ -10,8 +10,10 @@ import (
 	"time"
 
 	"github.com/tamnd/luatdo/campaign"
+	"github.com/tamnd/luatdo/concept"
 	"github.com/tamnd/luatdo/coverage"
 	"github.com/tamnd/luatdo/extract"
+	"github.com/tamnd/luatdo/law"
 	"github.com/tamnd/luatdo/norm"
 	"github.com/tamnd/luatdo/ontology"
 	"github.com/tamnd/luatdo/review"
@@ -23,10 +25,90 @@ func init() {
 		command{"norms", "LLM norm extraction with entailment verification", cmdNorms},
 		command{"review", "human review queue for gated statements", cmdReview},
 		command{"build", "assemble verified statements into the trusted store", cmdBuild},
+		command{"ask", "answer the norm competency questions over the trusted store", cmdAsk},
 	)
 }
 
+func cmdAsk(args []string) error {
+	fs := flag.NewFlagSet("ask", flag.ContinueOnError)
+	dataDir := fs.String("data", "", "data directory")
+	doc := fs.String("doc", "", "restrict question 9 to one document")
+	days := fs.Int("days", 5, "the working day threshold of question 12")
+	sub, rest, err := parseSub(fs, args)
+	if err != nil {
+		return err
+	}
+	s, err := openStore(*dataDir)
+	if err != nil {
+		return err
+	}
+	records, err := loadTrusted(s)
+	if err != nil {
+		return err
+	}
+	switch sub {
+	case "9":
+		fmt.Print(norm.AskQuestion9(records, *doc, arg(rest, 0)))
+	case "10":
+		docs, err := loadDocs(s)
+		if err != nil {
+			return err
+		}
+		fmt.Print(norm.AskQuestion10(records, provisionText(docs)))
+	case "11":
+		docs, err := loadDocs(s)
+		if err != nil {
+			return err
+		}
+		fmt.Print(norm.AskQuestion11(records, norm.Positions(docs), strings.Join(rest, " ")))
+	case "12":
+		fmt.Print(norm.AskQuestion12(records, *days))
+	case "13":
+		fmt.Print(norm.AskQuestion13(records))
+	case "14":
+		id := arg(rest, 0)
+		if id == "" {
+			return fmt.Errorf("usage: luatdo ask 14 <statement-id>")
+		}
+		fmt.Print(norm.AskQuestion14(records, id))
+	case "15":
+		terms, err := loadTermUses(s)
+		if err != nil {
+			return err
+		}
+		fmt.Print(norm.AskQuestion15(records, concept.DefinedLabels(terms)))
+	default:
+		return fmt.Errorf("usage: luatdo ask 9|10|11|12|13|14|15 [argument]")
+	}
+	return nil
+}
+
+// provisionText is the words of every provision, which question 10 needs to
+// tell a provision that names no actor from one whose actor the extraction
+// dropped.
+func provisionText(docs []*law.Document) map[string]string {
+	out := map[string]string{}
+	for _, d := range docs {
+		for i := range d.Provisions {
+			out[d.Provisions[i].ID] = d.Provisions[i].Text
+		}
+	}
+	return out
+}
+
+func loadTrusted(s *store.Store) ([]norm.Record, error) {
+	var records []norm.Record
+	path := filepath.Join(s.Trusted(), "statements.json")
+	if err := store.ReadJSON(path, &records); err != nil {
+		return nil, fmt.Errorf("no trusted statements, run luatdo build first: %w", err)
+	}
+	return records, nil
+}
+
 func cmdNorms(args []string) error {
+	if len(args) > 0 && args[0] == "gold" {
+		return normGold(args[1:])
+	}
 	fs := flag.NewFlagSet("norms", flag.ContinueOnError)
 	dataDir := fs.String("data", "", "data directory")
 	mode := fs.String("mode", "fast", "fast or slow")
@@ -107,12 +189,12 @@ func cmdReview(args []string) error {
 	case "", "list":
 		pending := review.Pending(items, decisions)
 		for _, it := range pending {
-			subject := ""
-			if it.Statement.Subject != nil {
-				subject = it.Statement.Subject.Text
+			bearer := "(nobody)"
+			if it.Statement.Bearer != nil {
+				bearer = it.Statement.Bearer.Text
 			}
 			fmt.Printf("%s\n  %s: %s / %s\n  quote: %s\n  reasons: %s\n",
-				it.StatementID, it.Statement.Type, subject, it.Statement.Action.Text,
+				it.StatementID, it.Statement.Type, bearer, it.Statement.Action.Text,
 				it.Statement.Evidence.Quote, strings.Join(it.Reasons, "; "))
 		}
 		fmt.Printf("%d pending of %d queued\n", len(pending), len(items))
@@ -190,15 +272,60 @@ func cmdBuild(args []string) error {
 			case queued[rec.ID] && !review.Approved(decisions, rec.ID):
 				dropped++
 			default:
-				trusted = append(trusted, *rec)
+				out := *rec
+				// A statement the judge rejected and a person kept goes in saying
+				// so, rather than borrowing the word the judge would not give it.
+				if out.Status != norm.StatusVerified {
+					out.Status = norm.StatusApproved
+				}
+				norm.Rederive(&out.Statement)
+				trusted = append(trusted, out)
 				kept++
 			}
 		}
 	}
+	docs, err := loadDocs(s)
+	if err != nil {
+		return err
+	}
+	// Both of these run over the trusted set rather than over each extraction
+	// job, because both are corpus wide. A sanction basis points at a document
+	// the job that produced it never saw, and a procedure's steps are extracted
+	// one provision at a time by calls that cannot know how many there are.
+	// The concept join comes before the sanction resolution, because a sanction
+	// matched through a concept is the whole point of the concept layer being
+	// under this one. A store where the concept build has never run links
+	// nothing and says so, rather than failing.
+	layer, err := concept.ReadLayer(s.Concepts())
+	if err != nil {
+		return err
+	}
+	linked, refs := 0, 0
+	if layer != nil {
+		linked, refs = norm.LinkConcepts(trusted, concept.LabelIndex(layer.TermUses, layer.Memberships))
+	}
+	cov := norm.ResolveSanctions(trusted, norm.Index(docs))
+	procedures := norm.GroupProcedures(trusted, norm.Positions(docs))
+
 	if err := store.WriteJSON(filepath.Join(s.Trusted(), "statements.json"), trusted); err != nil {
 		return err
 	}
+	if err := store.WriteJSON(filepath.Join(s.Trusted(), "procedures.json"), procedures); err != nil {
+		return err
+	}
 	fmt.Printf("build: %d trusted, %d awaiting review, %d dropped\n", kept, waiting, dropped)
+	if layer == nil {
+		fmt.Println("concepts: no concept layer in this store, references carry their registry class alone")
+	} else {
+		fmt.Printf("concepts: %d of %d references resolved to a concept\n", linked, refs)
+	}
+	fmt.Printf("sanctions: %d, %d resolved (%d into another instrument), %d outside the corpus, %d unreadable\n",
+		cov.Sanctions, cov.Resolved, cov.CrossDoc, cov.External, cov.Unresolved)
+	steps := 0
+	for _, p := range procedures {
+		steps += len(p.Steps)
+	}
+	fmt.Printf("procedures: %d with %d steps\n", len(procedures), steps)
 	return nil
 }
 

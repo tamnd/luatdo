@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/tamnd/luatdo/law"
+	"github.com/tamnd/luatdo/store"
 )
 
 // The gold set is annotated before the pipeline runs over the same clauses, and
@@ -71,19 +72,21 @@ type GoldPair struct {
 }
 
 // ReadGold returns the annotated clauses.
-func ReadGold(dir string) ([]Gold, error) { return readJSONL[Gold](filepath.Join(dir, GoldFile)) }
+func ReadGold(dir string) ([]Gold, error) { return store.ReadJSONL[Gold](filepath.Join(dir, GoldFile)) }
 
 // ReadGoldPairs returns the annotated merge questions.
 func ReadGoldPairs(dir string) ([]GoldPair, error) {
-	return readJSONL[GoldPair](filepath.Join(dir, GoldPairsFile))
+	return store.ReadJSONL[GoldPair](filepath.Join(dir, GoldPairsFile))
 }
 
 // WriteGold appends annotations.
-func WriteGold(dir string, gs []Gold) error { return appendJSONL(filepath.Join(dir, GoldFile), gs) }
+func WriteGold(dir string, gs []Gold) error {
+	return store.AppendJSONL(filepath.Join(dir, GoldFile), gs)
+}
 
 // WriteGoldPairs appends annotated merge questions.
 func WriteGoldPairs(dir string, ps []GoldPair) error {
-	return appendJSONL(filepath.Join(dir, GoldPairsFile), ps)
+	return store.AppendJSONL(filepath.Join(dir, GoldPairsFile), ps)
 }
 
 // CheckGold returns what is wrong with an annotation set, sorted. The gold set
