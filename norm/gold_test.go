@@ -110,14 +110,35 @@ func TestCheckGoldRefusesAnAnnotationNobodyCouldScoreAgainst(t *testing.T) {
 
 func TestGoldRoundTrips(t *testing.T) {
 	dir := t.TempDir()
-	if err := WriteGold(dir, []Gold{annotation()}); err != nil {
+	if err := WriteGold(dir, "", []Gold{annotation()}); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	got, err := ReadGold(dir)
+	got, err := ReadGold(dir, "")
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
 	if len(got) != 1 || got[0].Duoc != SensePassiveRight || len(got[0].Statements) != 1 {
 		t.Errorf("annotation did not come back as it went in: %+v", got)
+	}
+}
+
+// Two campaigns measure two domains, and a gold set that mixed them would
+// report a precision figure about neither.
+func TestOneCampaignsAnnotationsDoNotLandInAnothers(t *testing.T) {
+	dir := t.TempDir()
+	if err := WriteGold(dir, "labour-2025", []Gold{annotation()}); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	got, err := ReadGold(dir, "tax-2025")
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("the tax gold set holds %d of the labour annotations", len(got))
+	}
+	// The unqualified name is the first campaign's, drawn before there was a
+	// second one, and it stays where it is.
+	if got, err := ReadGold(dir, ""); err != nil || len(got) != 0 {
+		t.Errorf("a campaign's annotations were written to the corpus wide file: %d, %v", len(got), err)
 	}
 }

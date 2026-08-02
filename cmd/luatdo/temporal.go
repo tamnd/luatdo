@@ -7,9 +7,8 @@ import (
 	"os"
 	"sort"
 	"strings"
-	"time"
 
-	"github.com/tamnd/luatdo/api"
+	"github.com/tamnd/luatdo/campaign"
 	"github.com/tamnd/luatdo/coverage"
 	"github.com/tamnd/luatdo/law"
 	"github.com/tamnd/luatdo/relation"
@@ -26,8 +25,11 @@ func init() {
 func cmdTemporal(args []string) error {
 	fs := flag.NewFlagSet("temporal", flag.ContinueOnError)
 	dataDir := fs.String("data", "", "data directory")
-	limit := fs.Int("limit", 0, "stop after this many provisions, 0 for all")
+	limit := fs.Int("limit", 0, "stop after this many instruments, 0 for all")
 	only := fs.String("doc", "", "one amending instrument, for a trial run before a campaign")
+	scope := fs.String("campaign", "", "restrict the reading pass to a named campaign")
+	workers := fs.String("parallel", "auto", "worker count, or auto")
+	dryRun := fs.Bool("dry-run", false, "print the queue, call no model")
 	corrections := fs.Int("max-corrections", 2, "bounded retries on invalid model output")
 	date := fs.String("date", "", "the date a query is asked at, YYYY-MM-DD")
 	before := fs.String("before", "", "the earlier date, for a two date comparison")
@@ -46,7 +48,9 @@ func cmdTemporal(args []string) error {
 	case "prompt":
 		return temporalPrompt(s, arg(rest, 0))
 	case "read":
-		return temporalRead(s, dir, *only, *limit, *corrections)
+		return temporalRead(s, dir, breadth{
+			scope: *scope, only: *only, limit: *limit, workers: *workers, dryRun: *dryRun,
+		}, *corrections)
 	case "build":
 		return temporalBuild(s, dir)
 	case "check":
@@ -146,7 +150,7 @@ func temporalPrompt(s *store.Store, provisionID string) error {
 // temporalRead runs the amending instruction pass, one file of operations per
 // instrument. An instrument that fails leaves no file, which is what puts it
 // back in the queue next time.
-func temporalRead(s *store.Store, dir, only string, limit, corrections int) error {
+func temporalRead(s *store.Store, dir string, b breadth, corrections int) error {
 	amends, err := amendingLinks(s)
 	if err != nil {
 		return err
@@ -163,65 +167,52 @@ func temporalRead(s *store.Store, dir, only string, limit, corrections int) erro
 
 	instruments := make([]string, 0, len(amends))
 	for id := range amends {
-		if only != "" && id != only {
-			continue
-		}
 		instruments = append(instruments, id)
 	}
 	sort.Strings(instruments)
 
-	var usage api.Usage
-	read, asked, skipped, ops, failed := 0, 0, 0, 0, 0
-	ctx := context.Background()
-	for _, id := range instruments {
-		if limit > 0 && asked >= limit {
-			break
-		}
-		doc, derr := loadDoc(s, id)
+	b.name, b.store = "temporal read", s
+	b.done = func(docID string) bool {
+		_, err := os.Stat(temporal.OperationPath(dir, docID))
+		return err == nil
+	}
+	_, err = b.run(instruments, func(ctx context.Context, docID string) (campaign.Outcome, error) {
+		var out campaign.Outcome
+		doc, derr := loadDoc(s, docID)
 		if derr != nil {
 			// An instrument with metadata only has no instruction to read. That
 			// is coverage rather than failure, and it is counted as coverage.
-			skipped++
-			continue
+			// No file is written, because a document whose text arrives later
+			// has to come back into the queue when it does.
+			return campaign.Outcome{Skipped: true}, nil
 		}
 		provisions := amendingProvisions(doc)
 		var found []temporal.Operation
-		cut := false
 		for i := range provisions {
-			if limit > 0 && asked >= limit {
-				cut = true
-				break
-			}
-			asked++
-			started := time.Now()
 			got, u, rerr := r.Read(ctx, doc.ID, provisions[i].ID, provisions[i].Text, law.ISODate(doc.EffectiveFrom))
-			usage = addAPIUsage(usage, u)
-			// A provision takes a reasoning model minutes, and a pass that says
-			// nothing for an hour looks exactly like a hang.
-			fmt.Fprintf(os.Stderr, "  %-60s %d operations, %s\n",
-				provisions[i].ID, len(got), time.Since(started).Round(time.Second))
+			out.Calls++
+			out.Usage = addAPIUsage(out.Usage, u)
 			if rerr != nil {
-				fmt.Fprintf(os.Stderr, "  %s: %v\n", provisions[i].ID, rerr)
-				failed++
-				continue
+				// The operations already read are thrown away with the
+				// instrument. An amendment chain read to the third of five
+				// instructions builds a version graph that looks complete and is
+				// wrong about what the provision said, which is worse than one
+				// that is visibly missing an instrument.
+				return out, fmt.Errorf("%s: %w", provisions[i].ID, rerr)
 			}
 			found = append(found, got...)
 		}
-		if cut {
-			// A limit stopped this instrument part way, so it was not read and it
-			// leaves no file. Writing one would take the rest of it out of the
-			// queue forever.
-			break
+		if out.Calls == 0 {
+			// None of the provisions held an amending word. The file is still
+			// written, because that is a reading and not an absence of one.
+			out.Skipped = true
 		}
-		read++
-		ops += len(found)
-		if werr := temporal.WriteOperations(dir, doc.ID, found); werr != nil {
-			return werr
-		}
+		out.Produced = len(found)
+		return out, temporal.WriteOperations(dir, doc.ID, found)
+	})
+	if err != nil {
+		return err
 	}
-	fmt.Printf("read %d instruments, asked about %d provisions, skipped %d instruments with no content\n", read, asked, skipped)
-	fmt.Printf("%d operations, %d provisions the model could not get right\n", ops, failed)
-	fmt.Printf("usage %d input, %d output, %d total tokens\n", usage.InputTokens, usage.OutputTokens, usage.TotalTokens)
 	reportRoutes(eng)
 	fmt.Println("nothing is versioned yet, run luatdo temporal build")
 	return nil

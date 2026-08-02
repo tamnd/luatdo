@@ -72,7 +72,10 @@ func TestExport(t *testing.T) {
 	if len(components) != 3 {
 		t.Errorf("components.csv rows = %d, want header plus 2", len(components))
 	}
-	if label := components[1][len(components[1])-1]; label != "Component;Provision" {
+	// The separator is the array delimiter, because the importer splits :LABEL
+	// with whatever --array-delimiter says. A semicolon here made one label
+	// called "Component;Provision", which is not a label anything queries.
+	if label := components[1][len(components[1])-1]; label != "Component"+arrayDelimiter+"Provision" {
 		t.Errorf("component label = %q, want the alias alongside the real label", label)
 	}
 
@@ -154,7 +157,7 @@ func TestTheSplitLosesNothingTheOldExportCarried(t *testing.T) {
 	}
 	rebuilt := map[string][]string{}
 	for _, row := range readCSV(t, filepath.Join(dir, "components.csv"))[1:] {
-		labels := strings.Split(row[6], ";")
+		labels := strings.Split(row[6], arrayDelimiter)
 		if !slices.Contains(labels, "Provision") {
 			t.Errorf("component %s carries %v, and a query for the old label would miss it", row[0], labels)
 		}

@@ -8,9 +8,9 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/tamnd/luatdo/api"
+	"github.com/tamnd/luatdo/campaign"
 	"github.com/tamnd/luatdo/concept"
 	"github.com/tamnd/luatdo/coverage"
 	"github.com/tamnd/luatdo/law"
@@ -27,8 +27,11 @@ func init() {
 func cmdRelations(args []string) error {
 	fs := flag.NewFlagSet("relations", flag.ContinueOnError)
 	dataDir := fs.String("data", "", "data directory")
-	limit := fs.Int("limit", 0, "stop after this many provisions or edges, 0 for all")
+	limit := fs.Int("limit", 0, "stop after this many documents, or edges for verify, 0 for all")
 	only := fs.String("doc", "", "one document, for a trial run before a campaign")
+	scope := fs.String("campaign", "", "restrict the extraction pass to a named campaign")
+	workers := fs.String("parallel", "auto", "worker count, or auto")
+	dryRun := fs.Bool("dry-run", false, "print the queue, call no model")
 	corrections := fs.Int("max-corrections", 2, "bounded retries on invalid model output")
 	depth := fs.Int("depth", 0, "how far a hierarchy or prerequisite walk goes")
 	sub, rest, err := parseSub(fs, args)
@@ -45,7 +48,9 @@ func cmdRelations(args []string) error {
 	case "prompt":
 		return relationPrompt(s, arg(rest, 0))
 	case "extract":
-		return relationExtract(s, dir, *only, *limit, *corrections)
+		return relationExtract(s, dir, breadth{
+			scope: *scope, only: *only, limit: *limit, workers: *workers, dryRun: *dryRun,
+		}, *corrections)
 	case "define":
 		return relationDefine(s, dir, *corrections)
 	case "verify":
@@ -199,11 +204,33 @@ func relationPrompt(s *store.Store, provisionID string) error {
 	return nil
 }
 
+// mentionDocs is every document the linking pass wrote a report for, sorted.
+//
+// It reads the reports rather than reversing the file names, because
+// law.FileName replaces the characters an identifier holds and cannot be
+// undone. That is a thousand small files on the real store and it is paid once
+// per run, against a pass that spends minutes per document.
+func mentionDocs(s *store.Store) ([]string, error) {
+	var ids []string
+	err := eachMentionReport(s, "", func(r *concept.MentionReport) error {
+		if r.DocID != "" {
+			ids = append(ids, r.DocID)
+		}
+		return nil
+	})
+	sort.Strings(ids)
+	return ids, err
+}
+
 // relationExtract runs the provision level read, one file of raw sightings per
 // document. A document that fails leaves no artifact, which is exactly what puts
 // it back in the queue next time.
-func relationExtract(s *store.Store, dir, only string, limit, corrections int) error {
+func relationExtract(s *store.Store, dir string, b breadth, corrections int) error {
 	in, err := relationInputs(s, dir)
+	if err != nil {
+		return err
+	}
+	docs, err := mentionDocs(s)
 	if err != nil {
 		return err
 	}
@@ -217,16 +244,23 @@ func relationExtract(s *store.Store, dir, only string, limit, corrections int) e
 	}
 	fmt.Printf("relations: reading with %s from %s\n", eng.model, eng.source)
 
-	var usage api.Usage
-	docs, asked, skipped, edges, failed := 0, 0, 0, 0, 0
-	ctx := context.Background()
-	err = eachMentionReport(s, only, func(report *concept.MentionReport) error {
-		if limit > 0 && asked >= limit {
-			return nil
+	b.name, b.store = "relations extract", s
+	b.done = func(docID string) bool {
+		_, err := os.Stat(relation.SightingPath(dir, docID))
+		return err == nil
+	}
+	summary, err := b.run(docs, func(ctx context.Context, docID string) (campaign.Outcome, error) {
+		var out campaign.Outcome
+		report, err := concept.ReadMentions(s.Concepts(), docID)
+		if err != nil {
+			return out, err
 		}
-		doc, derr := loadDoc(s, report.DocID)
-		if derr != nil {
-			return derr
+		if report == nil {
+			return campaign.Outcome{Skipped: true}, nil
+		}
+		doc, err := loadDoc(s, docID)
+		if err != nil {
+			return out, err
 		}
 		texts := provisionTexts(doc)
 		byProvision := candidates(report, in)
@@ -237,54 +271,42 @@ func relationExtract(s *store.Store, dir, only string, limit, corrections int) e
 		sort.Strings(ids)
 
 		var found []relation.Edge
-		cut := false
 		for _, id := range ids {
-			if limit > 0 && asked >= limit {
-				cut = true
-				break
-			}
-			text := texts[id]
-			if text == "" || len(byProvision[id]) < 2 {
+			if texts[id] == "" || len(byProvision[id]) < 2 {
 				// One concept cannot relate to anything, and calling a model to
 				// be told so is paying for a foregone conclusion.
-				skipped++
 				continue
 			}
-			asked++
-			started := time.Now()
-			got, u, xerr := x.Extract(ctx, id, report.DocID, text, byProvision[id])
-			usage = addAPIUsage(usage, u)
-			// A provision takes a reasoning model minutes, and a pass that says
-			// nothing for an hour looks exactly like a hang.
-			fmt.Fprintf(os.Stderr, "  %-60s %d concepts, %d sightings, %s\n",
-				id, len(byProvision[id]), len(got), time.Since(started).Round(time.Second))
+			got, u, xerr := x.Extract(ctx, id, docID, texts[id], byProvision[id])
+			out.Calls++
+			out.Usage = addAPIUsage(out.Usage, u)
 			if xerr != nil {
-				fmt.Fprintf(os.Stderr, "  %s: %v\n", id, xerr)
-				failed++
-				continue
+				// The sightings already read are thrown away with the document,
+				// for the reason the limit is counted in documents: a file that
+				// says this document was read and holds the provisions up to the
+				// one that failed takes the rest out of the queue forever.
+				return out, fmt.Errorf("%s: %w", id, xerr)
 			}
 			found = append(found, got...)
 		}
-		if cut {
-			// A limit stopped this document part way, so it was not read and it
-			// leaves no file. Writing one would say it was read and found to hold
-			// what it held so far, which is how a trial run quietly takes the rest
-			// of a document out of the queue forever.
-			return nil
+		if out.Calls == 0 {
+			// Every provision in the document had fewer than two concepts in it,
+			// so there was nothing here to ask about. That is coverage and not a
+			// failure, and the file still gets written so the document does not
+			// come back.
+			out.Skipped = true
 		}
-		docs++
-		edges += len(found)
+		out.Produced = len(found)
 		relation.Sort(found)
-		return relation.WriteSightings(dir, report.DocID, found)
+		return out, relation.WriteSightings(dir, docID, found)
 	})
-	fmt.Printf("read %d documents, asked about %d provisions, skipped %d with fewer than two concepts\n", docs, asked, skipped)
-	fmt.Printf("%d raw sightings, %d provisions the model could not get right\n", edges, failed)
-	fmt.Printf("usage %d input, %d output, %d total tokens\n", usage.InputTokens, usage.OutputTokens, usage.TotalTokens)
-	reportRoutes(eng)
 	if err != nil {
 		return err
 	}
-	fmt.Println("nothing is folded yet, run luatdo relations define then build")
+	reportRoutes(eng)
+	if summary.Done > 0 {
+		fmt.Println("nothing is folded yet, run luatdo relations define then build")
+	}
 	return nil
 }
 

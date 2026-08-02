@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/tamnd/luatdo/campaign"
 	"github.com/tamnd/luatdo/coverage"
 	"github.com/tamnd/luatdo/norm"
 	"github.com/tamnd/luatdo/store"
@@ -25,12 +26,22 @@ import (
 // file beside it.
 const candidateFile = "gold_norm_candidates.jsonl"
 
+// candidatePath keeps one campaign's draw apart from another's, on the same
+// terms as the annotations it becomes.
+func candidatePath(scope string) string {
+	if scope == "" {
+		return candidateFile
+	}
+	return "gold_norm_candidates_" + scope + ".jsonl"
+}
+
 func normGold(args []string) error {
 	fs := flag.NewFlagSet("norms gold", flag.ContinueOnError)
 	dataDir := fs.String("data", "", "data directory")
 	n := fs.Int("n", 120, "clauses to draw")
 	duocShare := fs.Int("duoc", 60, "percent of the draw that must use the word được")
 	seed := fs.String("seed", "m11", "sampling seed, so a draw is reproducible")
+	scope := fs.String("campaign", "", "draw from and score against a named campaign")
 	sub, _, err := parseSub(fs, args)
 	if err != nil {
 		return err
@@ -41,11 +52,11 @@ func normGold(args []string) error {
 	}
 	switch sub {
 	case "sample":
-		return normGoldSample(s, *n, *duocShare, *seed)
+		return normGoldSample(s, *scope, *n, *duocShare, *seed)
 	case "check":
-		return normGoldCheck(s)
+		return normGoldCheck(s, *scope)
 	case "score":
-		return normGoldScore(s)
+		return normGoldScore(s, *scope)
 	default:
 		return fmt.Errorf("usage: luatdo norms gold sample|check|score")
 	}
@@ -60,7 +71,14 @@ func normGold(args []string) error {
 // twenty points when one annotation is argued about. The oversampling is
 // declared rather than hidden: the report says how many of the drawn clauses
 // use the word, so nobody reads the accuracy as a corpus wide rate.
-func normGoldSample(s *store.Store, n, duocShare int, seed string) error {
+//
+// A campaign narrows the draw to the documents in it. That is the difference
+// between a gold set that measures the pipeline and one that measures the
+// pipeline on the law somebody is actually reading: the first campaign's
+// numbers are about labour prose, and a tax campaign scored against clauses
+// drawn from the whole corpus would report the same figure with a different
+// name on it.
+func normGoldSample(s *store.Store, scope string, n, duocShare int, seed string) error {
 	type candidate struct {
 		id, docID, docType, text, hash string
 		duoc                           bool
@@ -70,9 +88,22 @@ func normGoldSample(s *store.Store, n, duocShare int, seed string) error {
 	if err != nil {
 		return err
 	}
+	inScope := map[string]bool{}
+	if scope != "" {
+		sc, err := campaign.LookupScope(scope)
+		if err != nil {
+			return err
+		}
+		if _, inScope, err = campaignDocs(s, sc); err != nil {
+			return err
+		}
+	}
 	var withDuoc, without []candidate
 	types := map[string]bool{}
 	for _, d := range docs {
+		if scope != "" && !inScope[d.ID] {
+			continue
+		}
 		for _, p := range coverage.Extractable(d) {
 			if strings.TrimSpace(p.Text) == "" {
 				continue
@@ -122,27 +153,31 @@ func normGoldSample(s *store.Store, n, duocShare int, seed string) error {
 	if err := os.MkdirAll(s.Norms(), 0o755); err != nil {
 		return err
 	}
-	path := filepath.Join(s.Norms(), candidateFile)
+	path := filepath.Join(s.Norms(), candidatePath(scope))
 	if err := store.WriteFile(path, []byte(b.String())); err != nil {
 		return err
 	}
-	fmt.Printf("drew %d clauses of %d extractable across %d document types, seed %q\n",
-		len(drawn), len(withDuoc)+len(without), len(types), seed)
+	where := "the corpus"
+	if scope != "" {
+		where = "campaign " + scope
+	}
+	fmt.Printf("drew %d clauses of %d extractable in %s across %d document types, seed %q\n",
+		len(drawn), len(withDuoc)+len(without), where, len(types), seed)
 	fmt.Printf("%d of them use được, which is %d percent of the draw and not the share the corpus has\n",
 		wantDuoc, 100*wantDuoc/max(len(drawn), 1))
 	fmt.Printf("wrote %s, annotate it by hand into %s before reading the score\n",
-		path, filepath.Join(s.Norms(), norm.GoldFile))
+		path, norm.GoldPath(s.Norms(), scope))
 	return nil
 }
 
-func normGoldCheck(s *store.Store) error {
-	gold, err := norm.ReadGold(s.Norms())
+func normGoldCheck(s *store.Store, scope string) error {
+	gold, err := norm.ReadGold(s.Norms(), scope)
 	if err != nil {
 		return err
 	}
 	if len(gold) == 0 {
 		return fmt.Errorf("no gold set at %s, draw one with luatdo norms gold sample and annotate it by hand",
-			filepath.Join(s.Norms(), norm.GoldFile))
+			norm.GoldPath(s.Norms(), scope))
 	}
 	problems := norm.CheckGold(gold)
 	for _, p := range problems {
@@ -162,14 +197,14 @@ func normGoldCheck(s *store.Store) error {
 // than from the job, because that is what says whether the clause has been
 // amended under the annotation. A pass that covered a unit is one that produced
 // a job for it, found or not.
-func normGoldScore(s *store.Store) error {
-	gold, err := norm.ReadGold(s.Norms())
+func normGoldScore(s *store.Store, scope string) error {
+	gold, err := norm.ReadGold(s.Norms(), scope)
 	if err != nil {
 		return err
 	}
 	if len(gold) == 0 {
 		return fmt.Errorf("no gold set at %s, draw one with luatdo norms gold sample and annotate it by hand",
-			filepath.Join(s.Norms(), norm.GoldFile))
+			norm.GoldPath(s.Norms(), scope))
 	}
 	if problems := norm.CheckGold(gold); len(problems) > 0 {
 		for _, p := range problems {
