@@ -20,8 +20,18 @@ MATCH (k)-[:INVOLVES {side: 'b'}]->(b:Norm)
 MATCH (pa:Component)-[:HAS_NORM]->(a)
 MATCH (pb:Component)-[:HAS_NORM]->(b)
 WHERE $rule IS NULL OR k.rule = $rule
+// The concepts come back beside the finding and take no part in deciding it.
+// The old query paired norms on a shared concept, which is why it needed the
+// concept to exist, and the detector pairs on a canonical party and act
+// instead, so a pair that clashes over wording no concept was ever attached to
+// is still reported. What the two norms are both about is worth reading, and
+// two norms can be about several things at once, so it is a list.
+OPTIONAL MATCH (a)-[:ABOUT_CONCEPT]->(c:Concept)<-[:ABOUT_CONCEPT]-(b)
+WITH k, a, b, pa, pb, c ORDER BY c.label_vi
+WITH k, a, b, pa, pb, collect(DISTINCT c.label_vi) AS concepts
 RETURN k.rule AS rule,
        k.circumstances AS circumstances,
+       concepts,
        k.party AS actor,
        k.act AS action,
        k.matched AS matched,
@@ -30,5 +40,5 @@ RETURN k.rule AS rule,
        pb.id AS provision_b, b.norm_type AS modality_b, b.evidence_quote AS quote_b,
        k.rank AS ranking,
        k.explanation AS explanation
-ORDER BY circumstances, rule, provision_a
+ORDER BY circumstances, rule, provision_a, provision_b
 LIMIT $limit
