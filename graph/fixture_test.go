@@ -3,6 +3,7 @@ package graph
 import (
 	"github.com/tamnd/luatdo/cite"
 	"github.com/tamnd/luatdo/concept"
+	"github.com/tamnd/luatdo/conflict"
 	"github.com/tamnd/luatdo/law"
 	"github.com/tamnd/luatdo/norm"
 	"github.com/tamnd/luatdo/ontology"
@@ -412,6 +413,32 @@ func fxTemporal() *temporal.Layer {
 	}
 }
 
+// fxConflicts runs the real detector over the fixture's own statements, so the
+// projected findings are the ones the checker produces rather than ones written
+// out by hand here.
+//
+// The pay and no-pay pair is the one it fires on: the same employer, the same
+// act, one duty and one prohibition. The parse pass is stood in for, because it
+// calls a model and a fixture does not, and standing it in is exactly what it
+// does in production, namely fill the canonical party and act.
+func fxConflicts() []conflict.Finding {
+	var forms []*conflict.Form
+	for _, r := range fxStatements() {
+		f, ok := conflict.Draft(&r)
+		if !ok {
+			continue
+		}
+		if r.Statement.Bearer != nil {
+			f.Party = law.Slug(r.Statement.Bearer.Text)
+			f.Canon.Party = r.Statement.Bearer.Text
+		}
+		f.Act = law.Slug(r.Statement.Action.Text)
+		f.Canon.Act = r.Statement.Action.Text
+		forms = append(forms, f)
+	}
+	return conflict.Check(forms, nil).Findings
+}
+
 // competencyFixture is the whole projection the competency tests run against.
 func competencyFixture() Input {
 	return Input{
@@ -422,6 +449,7 @@ func competencyFixture() Input {
 		Layer:      fxLayer(),
 		Relations:  fxRelations(),
 		Temporal:   fxTemporal(),
+		Conflicts:  fxConflicts(),
 		Definitions: []term.Definition{{
 			ProvisionID: fxCode + ":article-3", TermID: "vn:term:nguoi-lao-dong",
 			Term: "người lao động", Connective: "là",

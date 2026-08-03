@@ -382,7 +382,12 @@ var liveAnswers = []answer{
 		}},
 	{n: 19, why: "article 94 requires paying wages and its clause 1 forbids the same thing of the same actor", rows: 1,
 		check: func(t *testing.T, got []map[string]any) {
-			eq(t, "concept", str(t, got[0], "concept"), "tiền lương")
+			// The concepts are reported beside the pair and decide nothing, so
+			// the assertion is that the shared one comes back and not that it is
+			// the only thing the two norms have in common.
+			if c := list(t, got[0], "concepts"); len(c) != 1 || c[0] != "tiền lương" {
+				t.Errorf("shared concepts: got %v, want [tiền lương]", c)
+			}
 			eq(t, "action", str(t, got[0], "action"), "trả lương")
 			eq(t, "first modality", str(t, got[0], "modality_a"), "prohibition")
 			eq(t, "second modality", str(t, got[0], "modality_b"), "duty")

@@ -13,6 +13,7 @@ import (
 	"github.com/tamnd/luatdo/campaign"
 	"github.com/tamnd/luatdo/cite"
 	"github.com/tamnd/luatdo/concept"
+	"github.com/tamnd/luatdo/conflict"
 	"github.com/tamnd/luatdo/coverage"
 	"github.com/tamnd/luatdo/fetch"
 	"github.com/tamnd/luatdo/graph"
@@ -422,6 +423,12 @@ func cmdExport(args []string) error {
 	// asked.
 	in.Relations, _ = relation.ReadEdges(s.Relation())
 	in.Temporal, _ = temporal.ReadLayer(s.Temporal())
+	// The conflict findings, on the same terms: a store where luatdo conflicts
+	// check has never run exports without them, and question 19 comes back
+	// empty rather than wrong.
+	if report, err := conflict.ReadReport(s.Conflict()); err == nil && report != nil {
+		in.Conflicts = report.Findings
+	}
 
 	// A campaign scopes the dump as well as the gates. The whole corpus is not
 	// the unit anybody works with: a person asking about labour law wants the

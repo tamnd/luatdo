@@ -307,6 +307,17 @@ func Merge(ctx context.Context, target Target, in Input) error {
 		return err
 	}
 
+	var conflictRows, involvesRows []map[string]any
+	if err := eachConflict(in, func(c conflictNode) error {
+		conflictRows = append(conflictRows, c.fields())
+		involvesRows = append(involvesRows,
+			map[string]any{"from": c.ID, "to": c.NormA, "side": "a"},
+			map[string]any{"from": c.ID, "to": c.NormB, "side": "b"})
+		return nil
+	}); err != nil {
+		return err
+	}
+
 	for _, statement := range []string{
 		"CREATE CONSTRAINT doc_id IF NOT EXISTS FOR (d:Document) REQUIRE d.id IS UNIQUE",
 		"CREATE CONSTRAINT component_id IF NOT EXISTS FOR (c:Component) REQUIRE c.id IS UNIQUE",
@@ -322,6 +333,7 @@ func Merge(ctx context.Context, target Target, in Input) error {
 		"CREATE CONSTRAINT merged_concept_id IF NOT EXISTS FOR (c:Concept) REQUIRE c.id IS UNIQUE",
 		"CREATE CONSTRAINT event_id IF NOT EXISTS FOR (e:" + EventLabel + ") REQUIRE e.id IS UNIQUE",
 		"CREATE CONSTRAINT temporal_version_id IF NOT EXISTS FOR (v:" + TemporalVersionLabel + ") REQUIRE v.id IS UNIQUE",
+		"CREATE CONSTRAINT conflict_id IF NOT EXISTS FOR (c:" + ConflictLabel + ") REQUIRE c.id IS UNIQUE",
 	} {
 		if _, err := session.ExecuteWrite(ctx, func(tx neo4j.ManagedTransaction) (any, error) {
 			return tx.Run(ctx, statement, nil)
@@ -448,6 +460,15 @@ func Merge(ctx context.Context, target Target, in Input) error {
 		steps = append(steps, step{"UNWIND $rows AS r MATCH (a:" + e.from + " {id: r.from}), (b:" + e.to + " {id: r.to}) " +
 			"MERGE (a)-[:" + e.relType + "]->(b)", temporalEdgeRows[e.relType]})
 	}
+	// The side is a property of the edge and not part of its merge key. A
+	// conflict has exactly two norms in it and which one is called a is decided
+	// by sorting, so keying on the side would let a rerun that sorted the pair
+	// the other way write four edges where there are two.
+	steps = append(steps,
+		step{"UNWIND $rows AS r MERGE (c:" + ConflictLabel + " {id: r.id}) SET c += r", conflictRows},
+		step{"UNWIND $rows AS r MATCH (a:" + ConflictLabel + " {id: r.from}), (b:Norm {id: r.to}) " +
+			"MERGE (a)-[e:" + Involves + "]->(b) SET e.side = r.side", involvesRows},
+	)
 	for _, step := range steps {
 		if err := run(step.query, step.rows); err != nil {
 			return fmt.Errorf("merge: %w", err)
