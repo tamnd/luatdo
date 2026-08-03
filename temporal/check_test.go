@@ -113,6 +113,23 @@ func TestCheckCatchesLifeAfterRepeal(t *testing.T) {
 	}
 }
 
+// A repeal terminates every version above the clause it takes out, because each
+// of those components is re-issued without that child. Reading those as repeals
+// of the parent reported nine violations on the labour campaign and not one of
+// them was a provision coming back from the dead.
+func TestAnArticleThatLostAClauseWasNotItselfRepealed(t *testing.T) {
+	l, _ := Build(corpus(), []Operation{op("r1", KindRepeal, clause2, "2022-07-01")})
+	r := Check(l)
+	if got := invariants(r, 6); got != 0 {
+		t.Errorf("repealing one clause reported %d components as coming back from the dead:\n%v", got, r.Problems)
+	}
+	// The article does get a new version, and that is the point: it is the same
+	// article with one fewer clause, not a different one.
+	if n := len(l.Versions); n < 2 {
+		t.Fatalf("the repeal produced %d versions, so this test proves nothing", n)
+	}
+}
+
 func TestResumeExplainsLifeAfterSuspension(t *testing.T) {
 	l, _ := Build(corpus(), []Operation{
 		op("p1", KindSuspend, clause2, "2022-07-01"),

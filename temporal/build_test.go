@@ -97,6 +97,68 @@ func TestAmendReusesUnchangedSiblings(t *testing.T) {
 
 func clause1Sibling() string { return "vn:law:2019:45-2019-qh14:article-15:clause-1" }
 
+// chaptered is a document shaped the way most decrees are: a chapter holding a
+// section holding articles. The point of it is that the article identifiers are
+// shorter than the identifiers of the containers they sit in, because an article
+// is numbered against its instrument and not against the chapter.
+func chaptered() *law.Document {
+	const id = "vn:law:2004:113-2004-nd-cp"
+	return &law.Document{
+		ID: id, OfficialNumber: "113/2004/ND-CP", Title: "Nghị định thử",
+		DocType: "decree", EffectiveFrom: "2004-06-01",
+		Provisions: []law.Provision{
+			{ID: id + ":chapter-2", Kind: "chapter", Number: "II", Text: "Chương II."},
+			{ID: id + ":chapter-2:section-1", ParentID: id + ":chapter-2", Kind: "section", Number: "1", Text: "Mục 1."},
+			{ID: id + ":article-9", ParentID: id + ":chapter-2:section-1", Kind: "article", Number: "9", Text: "Điều 9."},
+			{ID: id + ":article-10", ParentID: id + ":chapter-2:section-1", Kind: "article", Number: "10", Text: "Điều 10."},
+			{ID: id + ":article-10:clause-1", ParentID: id + ":article-10", Kind: "clause", Number: "1", Text: "Nội dung."},
+		},
+	}
+}
+
+// Depth used to be the number of colons in the identifier, and on a document
+// like this one that put the section below the articles it contains. The
+// section's version was written first, the articles under it had no version yet,
+// and it came out holding fourteen empty strings. Nothing failed loudly: the
+// section was simply a component nothing could be reached through, so the
+// consolidated text of the chapter above it was empty and invariant 6 read the
+// broken parent links as provisions coming back from the dead.
+func TestAChapterHoldsTheArticlesUnderIt(t *testing.T) {
+	const id = "vn:law:2004:113-2004-nd-cp"
+	l, _ := Build(NewCorpus([]*law.Document{chaptered()}), []Operation{{
+		ID: "a1", Kind: KindAmend, AmendingDoc: amendDoc, CausedBy: amendDoc + ":article-1",
+		TargetDoc: id, TargetComponent: id + ":article-10:clause-1", EffectiveFrom: "2010-01-01",
+		NewText: "1. Nội dung mới.",
+	}})
+	v := NewView(l)
+
+	for _, ver := range l.Versions {
+		for i, child := range ver.Children {
+			if child == "" {
+				t.Errorf("%s holds an empty identifier at position %d, so a child was versioned after its parent", ver.ID, i)
+			}
+		}
+	}
+
+	section := v.VersionAt(id+":chapter-2:section-1", "2005-01-01")
+	if section == nil {
+		t.Fatal("the section has no version")
+	}
+	if len(section.Children) != 2 {
+		t.Fatalf("the section holds %d children, want the two articles under it", len(section.Children))
+	}
+	chapter := v.VersionAt(id+":chapter-2", "2005-01-01")
+	if chapter == nil || len(chapter.Children) != 1 {
+		t.Fatalf("the chapter is %+v, want one child which is the section", chapter)
+	}
+	// The whole point of getting the order right: the amendment at the bottom
+	// has to be visible from the top.
+	text, ok := v.TextAt(id+":chapter-2", "2010-06-01")
+	if !ok || !strings.Contains(text, "Nội dung mới") {
+		t.Errorf("the amended clause is not in the chapter's consolidated text:\n%q", text)
+	}
+}
+
 func TestSupplementInsertsAfterTheAnchor(t *testing.T) {
 	o := op("s1", KindSupplement, pointD, "2022-07-01")
 	o.NewText = "d) Theo công việc nhất định."

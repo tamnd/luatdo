@@ -173,7 +173,7 @@ func (b *builder) enact(doc *law.Document) {
 	}
 	// Deepest first, so a parent's children already have versions when the
 	// parent is written and the child version identifiers are known.
-	for _, id := range depthOrder(doc, children) {
+	for _, id := range depthOrder(doc) {
 		v := b.newVersion(id, doc.ID, from, textOf(doc, id), event.ID)
 		for _, child := range children[id] {
 			v.Children = append(v.Children, b.current[child])
@@ -191,13 +191,35 @@ func (b *builder) enact(doc *law.Document) {
 
 // depthOrder returns component identifiers deepest first, so a parent is
 // written after its children and can hold their version identifiers.
-func depthOrder(doc *law.Document, _ map[string][]string) []string {
-	depth := map[string]int{}
+//
+// Depth is counted by walking the parent links and not by counting the colons
+// in the identifier, and the difference is not cosmetic. An article is numbered
+// against its instrument rather than against the chapter it sits in, so Điều 9
+// of a decree is vn:law:...:article-9 whichever chapter holds it, while the
+// chapter and section around it are two segments deep. Counting segments
+// therefore made the container look deeper than its contents, wrote the
+// section's version before the articles under it existed, and filled its
+// children with empty strings: fourteen articles that the version graph could
+// not reach from the section above them, and a consolidated text that assembles
+// a chapter and finds nothing in it.
+func depthOrder(doc *law.Document) []string {
+	parent := make(map[string]string, len(doc.Provisions))
 	for i := range doc.Provisions {
 		p := &doc.Provisions[i]
-		// Depth is the number of structural segments after the document
-		// identifier, which the identifier already states.
-		depth[p.ID] = strings.Count(strings.TrimPrefix(p.ID, doc.ID), ":")
+		parent[p.ID] = p.ParentID
+	}
+	depth := make(map[string]int, len(parent))
+	for id := range parent {
+		n := 0
+		// The seen set is a guard and not a feature. A parent chain that loops
+		// is a corpus defect rather than a structure, and the only thing this
+		// function owes such a document is to finish.
+		seen := map[string]bool{id: true}
+		for up := parent[id]; up != "" && !seen[up]; up = parent[up] {
+			seen[up] = true
+			n++
+		}
+		depth[id] = n
 	}
 	ids := make([]string, 0, len(depth))
 	for id := range depth {

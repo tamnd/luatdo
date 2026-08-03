@@ -166,7 +166,25 @@ func checkFour(v *View, r *Report) {
 
 // Invariant 6: a component with a repeal has no later version unless an enact
 // or a resume explains it.
+//
+// The subtlety is that a repeal terminates more versions than it repeals. When
+// one clause goes, every component above it gets a new version with that child
+// removed, and the old version of each of them is terminated by the same repeal
+// event. Read naively, an article that lost a clause looks like an article that
+// was repealed and then came back the same day.
+//
+// The corpus says so out loud. Quyết định 06/2001 had provisions repealed out
+// of two of its articles by two later decisions, and the article that lost a
+// clause of Nghị định 03/2003 did the same thing, and all nine violations on the
+// labour campaign were of this shape. None of them was a provision coming back
+// from the dead, which is the only thing this check is for, and nine false ones
+// are how a person learns to stop reading the check.
+//
+// So the terminating event has to have targeted this component or something
+// above it. A repeal aimed at a descendant is a component being re-issued
+// smaller, and that is ordinary.
 func checkSix(v *View, r *Report) {
+	under := descendants(v)
 	for component, list := range v.byPart {
 		repealedAt := ""
 		for _, ver := range list {
@@ -181,11 +199,46 @@ func checkSix(v *View, r *Report) {
 				}
 				repealedAt = ""
 			}
-			if e := v.events[ver.TerminatedBy]; e != nil && (e.Kind == KindRepeal || e.Kind == KindReplace || e.Kind == KindExpire) {
-				repealedAt = ver.To
+			e := v.events[ver.TerminatedBy]
+			if e == nil || (e.Kind != KindRepeal && e.Kind != KindReplace && e.Kind != KindExpire) {
+				continue
+			}
+			if under[component][e.Targets] {
+				continue
+			}
+			repealedAt = ver.To
+		}
+	}
+}
+
+// descendants maps each component onto every component beneath it.
+//
+// It is built from the children the versions carry rather than from the
+// identifiers, because an identifier does not hold the whole path: an article
+// inside a chapter is numbered against its document, so the chapter's
+// identifier is not a prefix of the article's and a string test misses exactly
+// the case that matters.
+func descendants(v *View) map[string]map[string]bool {
+	parent := map[string]string{}
+	for _, ver := range v.versions {
+		for _, id := range ver.Children {
+			if child := v.versions[id]; child != nil && child.ComponentID != ver.ComponentID {
+				parent[child.ComponentID] = ver.ComponentID
 			}
 		}
 	}
+	under := map[string]map[string]bool{}
+	for c := range parent {
+		seen := map[string]bool{c: true}
+		for p := parent[c]; p != "" && !seen[p]; p = parent[p] {
+			seen[p] = true
+			if under[p] == nil {
+				under[p] = map[string]bool{}
+			}
+			under[p][c] = true
+		}
+	}
+	return under
 }
 
 func orNone(kind string) string {
