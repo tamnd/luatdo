@@ -150,6 +150,14 @@ node.TemporalVersion {
   caption: '{from_date}';
 }
 
+node.Conflict {
+  color: #C9302C;
+  border-color: #8B1A1A;
+  text-color-internal: #FFFFFF;
+  diameter: 65px;
+  caption: '{rule}';
+}
+
 relationship.CONTAINS { color: #A5ABB6; shaft-width: 1px; }
 relationship.CITES { color: #4C8EDA; shaft-width: 2px; }
 relationship.AMENDS { color: #D9534F; shaft-width: 3px; }
@@ -169,4 +177,5 @@ relationship.HAS_TEMPORAL_VERSION { color: #F2A0A0; shaft-width: 2px; }
 relationship.PRODUCES_VERSION { color: #C9302C; shaft-width: 2px; }
 relationship.TERMINATES { color: #C9302C; shaft-width: 2px; }
 relationship.CAUSED_BY { color: #D9534F; shaft-width: 2px; }
+relationship.INVOLVES { color: #C9302C; shaft-width: 2px; caption: '{side}'; }
 `

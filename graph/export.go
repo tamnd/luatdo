@@ -16,6 +16,7 @@ import (
 
 	"github.com/tamnd/luatdo/cite"
 	"github.com/tamnd/luatdo/concept"
+	"github.com/tamnd/luatdo/conflict"
 	"github.com/tamnd/luatdo/law"
 	"github.com/tamnd/luatdo/link"
 	"github.com/tamnd/luatdo/norm"
@@ -63,6 +64,8 @@ CREATE INDEX event_kind IF NOT EXISTS FOR (e:Event) ON (e.kind);
 CREATE INDEX temporal_version_component IF NOT EXISTS FOR (v:TemporalVersion) ON (v.component_id);
 CREATE INDEX temporal_version_interval IF NOT EXISTS FOR (v:TemporalVersion) ON (v.from_date, v.to_date);
 CREATE INDEX temporal_version_force IF NOT EXISTS FOR (v:TemporalVersion) ON (v.force);
+CREATE CONSTRAINT conflict_id IF NOT EXISTS FOR (c:Conflict) REQUIRE c.id IS UNIQUE;
+CREATE INDEX conflict_rule IF NOT EXISTS FOR (c:Conflict) ON (c.rule, c.circumstances);
 `
 
 // componentLabels is what a component node carries. law.ProvisionAlias rides
@@ -106,6 +109,11 @@ type Input struct {
 	// Temporal is the version graph: what each component said over which
 	// interval, and the events that closed one version and opened another.
 	Temporal *temporal.Layer
+	// Conflicts are the pairs the detector could not reconcile. They need
+	// Statements, since a conflict between two norms is nothing without the
+	// norms, and the projection drops any finding whose norms this export did
+	// not write.
+	Conflicts []conflict.Finding
 }
 
 // Export writes the CSV projection into dir.
@@ -468,6 +476,27 @@ func Export(dir string, in Input) error {
 		func(w *csv.Writer) error {
 			return eachTemporalEdge(in, func(from, to, relType string) error {
 				return w.Write([]string{from, to, relType})
+			})
+		}); err != nil {
+		return err
+	}
+	if err := writeCSV(filepath.Join(dir, "conflicts.csv"),
+		append(append([]string{"id:ID"}, conflictColumns...), ":LABEL"),
+		func(w *csv.Writer) error {
+			return eachConflict(in, func(c conflictNode) error {
+				return w.Write(append(append([]string{c.ID}, c.values()...), ConflictLabel))
+			})
+		}); err != nil {
+		return err
+	}
+	if err := writeCSV(filepath.Join(dir, "involves.csv"),
+		[]string{":START_ID", ":END_ID", "side", ":TYPE"},
+		func(w *csv.Writer) error {
+			return eachConflict(in, func(c conflictNode) error {
+				if err := w.Write([]string{c.ID, c.NormA, "a", Involves}); err != nil {
+					return err
+				}
+				return w.Write([]string{c.ID, c.NormB, "b", Involves})
 			})
 		}); err != nil {
 		return err
@@ -935,7 +964,7 @@ func writeImportScripts(dir string) error {
 		`--nodes=terms.csv --nodes=concepts.csv --nodes=subjects.csv ` +
 		`--nodes=norms.csv --nodes=norm_details.csv ` +
 		`--nodes=term_uses.csv --nodes=merged_concepts.csv ` +
-		`--nodes=events.csv --nodes=temporal_versions.csv ` +
+		`--nodes=events.csv --nodes=temporal_versions.csv --nodes=conflicts.csv ` +
 		`--relationships=contains.csv --relationships=has_version.csv --relationships=cites.csv ` +
 		`--relationships=defines.csv --relationships=mentions.csv ` +
 		`--relationships=subject_parents.csv --relationships=about_subject.csv ` +
@@ -943,7 +972,7 @@ func writeImportScripts(dir string) error {
 		`--relationships=instance_of.csv --relationships=differs_from.csv ` +
 		`--relationships=term_use_edges.csv ` +
 		`--relationships=relations.csv --relationships=about_concept.csv ` +
-		`--relationships=temporal_edges.csv`
+		`--relationships=temporal_edges.csv --relationships=involves.csv`
 	sh := "#!/bin/sh\n# Run from this directory, which must be writable, with the database stopped.\nneo4j-admin " + args + "\n"
 	cmd := "@echo off\r\nrem Run from this directory, which must be writable, with the database stopped.\r\nneo4j-admin " + args + "\r\n"
 	if err := os.WriteFile(filepath.Join(dir, "import.sh"), []byte(sh), 0o755); err != nil {
@@ -1004,6 +1033,14 @@ type Summary struct {
 	Events           int `json:"events"`
 	TemporalVersions int `json:"temporal_versions"`
 	TemporalEdges    int `json:"temporal_edges"`
+
+	// Conflicts is what the detector found and the projection wrote, and Shared
+	// is the subset whose conditions one contains the other. The two are printed
+	// together because they are different claims: a pair on shared circumstances
+	// can really both be triggered, and a pair on unknown circumstances may
+	// never meet.
+	Conflicts int `json:"conflicts"`
+	Shared    int `json:"conflicts_shared"`
 }
 
 // Summarize counts the projection without writing it.
@@ -1093,6 +1130,13 @@ func Summarize(in Input) Summary {
 		s.TemporalEdges++
 		return nil
 	})
+	_ = eachConflict(in, func(c conflictNode) error {
+		s.Conflicts++
+		if c.Circumstances == conflict.CircumstancesShared {
+			s.Shared++
+		}
+		return nil
+	})
 	return s
 }
 
@@ -1131,6 +1175,9 @@ func (s Summary) String() string {
 	}
 	if s.Events > 0 || s.TemporalVersions > 0 {
 		out += fmt.Sprintf(", events %d, temporal versions %d", s.Events, s.TemporalVersions)
+	}
+	if s.Conflicts > 0 {
+		out += fmt.Sprintf(", conflicts %d of which %d on shared circumstances", s.Conflicts, s.Shared)
 	}
 	return out
 }

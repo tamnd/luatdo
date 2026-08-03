@@ -132,6 +132,7 @@ RETURN path
 | `luatdo link` | Resolve mentions against the registry and the defined term table, with scores |
 | `luatdo norms` | Extract norm statements and verify them with the entailment judge |
 | `luatdo ask` | Answer the norm competency questions over the trusted store |
+| `luatdo conflicts` | Put trusted statements in a comparable form and find the pairs that cannot both be obeyed |
 | `luatdo temporal` | Read amending instructions, build the version graph, and answer questions at a date |
 | `luatdo prompt` | Print the exact prompt for a provision without calling a model |
 | `luatdo review` | Work the human review queue for gated statements |
@@ -505,6 +506,72 @@ Question 11 is a procedure as ordered steps with its deadlines, 12 is every dead
 Every answer says what it left out.
 Question 12 reports the deadlines it could not take apart, question 9 reports the duties with no consequence as a count and not just as rows, and question 13 reports the total it counted against.
 An answer that returns a clean list and says nothing about what it skipped reads as coverage, and it is not.
+
+## Two norms that cannot both be obeyed
+
+Question 19 asks which provisions contradict each other, and the Cypher form of it says in its own comment that it will produce false positives because it compares a bearer and an action and ignores the condition that distinguishes them.
+That comment is what this pass exists to delete.
+
+```sh
+luatdo conflicts parse            # every trusted statement into a comparable form
+luatdo conflicts check            # the rules over the pairs, no model in the comparison
+luatdo conflicts bench            # the generated gold set, with a judge behind it
+luatdo conflicts baseline         # ask a model directly, over the same pairs
+luatdo conflicts explain          # put the findings into Vietnamese, after the fact
+```
+
+No model is ever asked whether two norms conflict.
+A model asked that question answers it, fluently, in both directions, and there is no way from the outside to tell a real contradiction from a plausible one.
+So the strong model is a parser: it maps one trusted statement onto a comparable form, which is a party, an act, an object, a modality and the scope the norm applies in, and it never sees a second statement.
+Four rules then run in code over the pairs: an obligation against a prohibition, a permission against a prohibition, two deadlines on one duty, and two consequences for one act.
+Every finding carries the slots that had to agree and the slot where the pair parts, which is the minimal responsible set spelled out for a person rather than for a solver.
+Lex superior, lex posterior and lex specialis are reported beside the finding as ranking information and are not applied, because deciding which provision wins is not a thing to do to somebody without telling them.
+
+Scope intersection is arithmetic and stays in code: half open intervals, so a version that ends the day its successor starts does not overlap it, and a statement that stands down to another instrument is pointing at it rather than fighting it.
+Conditions are the hard half.
+Containment is sound and often silent, and a pair where neither condition set contains the other may describe one situation or exclude itself.
+That gap was the entire error of the checker on the gold set, so those pairs, and only those pairs, go to a model that is shown the two sets of circumstances and the party they are about, and nothing else: no operator, no act, no deadline, no quote, nothing that would let it work out what either provision requires.
+A model that is unsure is told to say the circumstances can hold together, so it can only ever remove a finding it is confident about, and one that is unreachable costs precision instead of conflicts.
+
+The gold set is generated from real statements by changing exactly one thing, so the label falls out of the mutation instead of out of anybody's opinion.
+Four mutations produce a conflict and six produce a near miss, and the two condition mutations pull against each other on purpose: one plants circumstances that exclude each other and one plants circumstances that differ and can both hold.
+A judge that answers every question the same way scores on one of them and fails the other.
+
+```text
+180 generated pairs, 60 conflicting by construction and 120 near misses
+precision 0.98, recall 0.98, f1 0.98
+40 pairs went to the judge, 20 dropped as never triggered together, 0 it would not answer
+```
+
+Without the judge the same set scores 0.75 precision at the same recall, and all 20 of the false positives are the exclusive conditions mutation.
+The two cases still wrong are worth more than the two decimal places.
+Both are pairs where the generator grafted an employment condition onto a tax provision or onto a duty of the Government, and the model's answer about them is defensible while the label is not, which is a limit of generating a gold set rather than annotating one.
+An earlier table cost eight more, and it deserved to: it called working in the country and working abroad mutually exclusive, which is true of one worker and false of an enterprise that employs hundreds.
+
+The other half of the argument is what happens when nobody builds any of this and just asks the model.
+`conflicts baseline` puts the same 180 pairs to the same endpoint, one call each, with both norms written back out as Vietnamese sentences and nothing from the pipeline in the prompt.
+
+```text
+asked the model directly about 180 pairs, 180 calls
+precision 0.46, recall 0.70, f1 0.55
+```
+
+The shape of that is more useful than the score.
+Asked directly the model is good at the things a person would call a contradiction on sight, 20 of 20 flipped operators and 20 of 20 clashes under conditions that can both hold, and it is poor at everything that is arithmetic: it caught 2 of 20 pairs with two different deadlines on one duty, and it called a conflict on 17 of 20 pairs whose provisions were never in force on the same day and on 19 of 20 where one norm expressly stands down to the other.
+Those last two are 36 confident false positives out of 40 pairs, and they are the two tests the checker does in four lines of code without asking anybody.
+That is the split the whole design is built on: reading is what the model is for, and comparing is not.
+
+The first version of this baseline scored 0.00 and it was measuring my own harness.
+The generated side of a pair has no sentence anywhere in the corpus and was carrying a note saying it came from the test suite, and several mutations plant a condition or an interval on the original side too, so the two quotes were not the two norms being compared.
+Both sides are now written back out from the same fields, which also hands the baseline the norm rather than the paragraph it was extracted from, so it loses on cleaner input than the checker gets.
+
+These pairs are generated and the report says so wherever it prints a number.
+The measurement on real law is the noise floor, which needs no annotation: two statements from the same provision cannot contradict each other, because a drafter does not contradict themselves inside one clause, so a rule that fires there has fired on two readings of one norm.
+
+On the labour and tax scope the detector reports nothing, over 671 comparable forms and 55 pairs, at a noise floor of zero.
+A run that reports nothing is either a clean scope or a detector that could never have fired, and a funnel ending in zero cannot tell those apart, so the check prints what the scope gave the rules to work with: 467 obligations, 8 prohibitions, 79 permissions, 117 rights, 43 deadlines counted from an event and no sanction at all.
+Both operator rules need a prohibition on one side and there are eight, and the sanction rule cannot fire anywhere in this scope whatever the norms say.
+That is the honest reading of the zero, and it is printed beside it.
 
 ## Running a campaign
 

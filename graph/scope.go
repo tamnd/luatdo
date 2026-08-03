@@ -79,6 +79,19 @@ func Restrict(in Input, keep map[string]bool) Input {
 		}
 	}
 
+	// A conflict needs both of its norms. Keeping one whose other half is
+	// outside the dump would put a pair in the graph that a reader can only see
+	// one side of, which is worse than not shipping it.
+	out.Conflicts = nil
+	for _, f := range in.Conflicts {
+		if f.A == nil || f.B == nil {
+			continue
+		}
+		if inDump(f.A.DocID, f.A.ProvisionID, keep, components) && inDump(f.B.DocID, f.B.ProvisionID, keep, components) {
+			out.Conflicts = append(out.Conflicts, f)
+		}
+	}
+
 	out.Layer, out.Relations = restrictConcepts(in, out.Statements, keep)
 	out.Temporal = restrictTemporal(in.Temporal, keep)
 	return out

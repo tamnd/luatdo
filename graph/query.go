@@ -56,21 +56,12 @@ const (
 	socialInsuranceQ4 = "người lao động"
 )
 
-// incompatibleModalities are the pairs of norm types that cannot both hold of
-// the same actor and the same action.
+// anyRule is what question 19 passes when it is not asking about one rule.
 //
-// Duty against prohibition is the flat contradiction. Permission against
-// prohibition is the more common one in practice: a law permits something and a
-// later decree forbids it, and neither drafter saw the other. Right against
-// prohibition is deliberately absent, because a right the holder does not
-// exercise is not violated by a prohibition on somebody else exercising it, and
-// including the pair produced more noise than findings.
-var incompatibleModalities = []any{
-	[]any{"duty", "prohibition"},
-	[]any{"prohibition", "duty"},
-	[]any{"permission", "prohibition"},
-	[]any{"prohibition", "permission"},
-}
+// Cypher has no default parameter, and a query run without every parameter it
+// names fails rather than treating the missing one as null. A named nil is
+// clearer at the call site than a bare one and says what the absence means.
+var anyRule any
 
 // Questions is the list, in the order the problem statement asks them.
 var Questions = []Question{
@@ -111,7 +102,7 @@ var Questions = []Question{
 	{18, "Show the amendment history of one provision as a chain of events with the instrument that caused each.", "q18.cypher",
 		map[string]any{"component": labourCodeArt94, "limit": 50}},
 	{19, "Two provisions both regulate the same concept and impose incompatible modalities on the same actor for the same action. Find them.", "q19.cypher",
-		map[string]any{"incompatible": incompatibleModalities, "limit": 100}},
+		map[string]any{"rule": anyRule, "limit": 100}},
 	{20, "A concept was redefined by a later instrument. Which earlier norms mentioning it are now potentially affected, and which of them were never amended?", "q20.cypher",
 		map[string]any{"limit": 200}},
 	{21, "What must exist before a construction permit can be issued, following only concept level prerequisite relations and not the text?", "q21.cypher",
