@@ -225,13 +225,27 @@ func recovery(s *store.Store, campaignName string, gold bool, limit, population,
 			fmt.Printf("  only slow mode found: %s\n", k)
 		}
 	}
-	path := filepath.Join(s.Eval(), "recovery_"+or(campaignName, "all")+".json")
+	path := filepath.Join(s.Eval(), recoveryFile(campaignName, gold))
 	if err := store.WriteJSON(path, out); err != nil {
 		return err
 	}
 	fmt.Print(recoverySummary(out))
 	fmt.Printf("wrote %s\n", path)
 	return nil
+}
+
+// recoveryFile names the result file.
+//
+// The gold clauses and the campaign queue are two different samples and cost
+// hours of model calls each, so they cannot share a name. They did until a
+// scope run was about to land on top of a gold run that had taken three hours,
+// which is how this was found.
+func recoveryFile(campaignName string, gold bool) string {
+	name := "recovery_" + or(campaignName, "all")
+	if gold {
+		name += "_gold"
+	}
+	return name + ".json"
 }
 
 // recoveryTargets is the provisions to re-extract, in a fixed order.
