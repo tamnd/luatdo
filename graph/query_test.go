@@ -70,8 +70,8 @@ func queryTokens(text string) []string {
 }
 
 func TestEveryCompetencyQuestionHasAQuery(t *testing.T) {
-	if len(Questions) != 23 {
-		t.Fatalf("competency questions: got %d, the problem statement asks 23", len(Questions))
+	if len(Questions) != 26 {
+		t.Fatalf("competency questions: got %d, the problem statement asks 23 and the act layer adds 3", len(Questions))
 	}
 	for i, q := range Questions {
 		if q.N != i+1 {
@@ -202,7 +202,7 @@ func TestQuestionByNumber(t *testing.T) {
 	if !ok || !strings.Contains(q.Ask, "redefined") {
 		t.Fatalf("question 20: got %q, %v", q.Ask, ok)
 	}
-	if _, ok := QuestionByNumber(24); ok {
-		t.Error("there is no question 24")
+	if _, ok := QuestionByNumber(27); ok {
+		t.Error("there is no question 27")
 	}
 }

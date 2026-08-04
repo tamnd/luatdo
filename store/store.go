@@ -57,6 +57,7 @@ func (s *Store) Norms() string    { return filepath.Join(s.Root, "norms") }
 func (s *Store) Review() string   { return filepath.Join(s.Root, "review") }
 func (s *Store) Trusted() string  { return filepath.Join(s.Root, "trusted") }
 func (s *Store) Conflict() string { return filepath.Join(s.Root, "conflict") }
+func (s *Store) Event() string    { return filepath.Join(s.Root, "event") }
 func (s *Store) Campaign() string { return filepath.Join(s.Root, "campaign") }
 func (s *Store) Eval() string     { return filepath.Join(s.Root, "eval") }
 func (s *Store) Export() string   { return filepath.Join(s.Root, "export") }

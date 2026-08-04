@@ -8,12 +8,18 @@ import (
 	"strings"
 )
 
-// The twenty three competency questions, as queries.
+// The competency questions, as queries.
 //
-// The list comes from the problem statement the project was specified against,
-// and it is the only test of the graph that matters to anybody outside it. A
-// projection that loads cleanly, passes every invariant, and cannot answer
-// question 16 is a well built object nobody needed.
+// Twenty three of them come from the problem statement the project was specified
+// against, and they are the only test of the graph that matters to anybody
+// outside it. A projection that loads cleanly, passes every invariant, and
+// cannot answer question 16 is a well built object nobody needed.
+//
+// The three after them come from the act layer, and they are numbered on the end
+// rather than folded into the original list because the numbers are how people
+// refer to these. Questions 24 through 26 ask what the earlier twenty three
+// could not: what follows from an act, what the corpus penalises, and which acts
+// two instruments share.
 //
 // Every query is shipped rather than described, for two reasons. A query written
 // out in a document rots the first time a label is renamed, and nobody types a
@@ -54,6 +60,11 @@ const (
 	labourCode        = "vn:law:2019:45-2019-qh14"
 	labourCodeArt94   = "vn:law:2019:45-2019-qh14:article-94"
 	socialInsuranceQ4 = "người lao động"
+	// actPayWages is the act article 94 is about, in the form the act layer
+	// identifies acts by. It is written out rather than built with event.ID
+	// because these defaults are examples a reader edits, and a reader who wants
+	// a different act needs to see the shape of the identifier.
+	actPayWages = "vn:event:pay:tra-luong"
 )
 
 // anyRule is what question 19 passes when it is not asking about one rule.
@@ -111,6 +122,12 @@ var Questions = []Question{
 		map[string]any{"limit": 200}},
 	{23, "Which concept pairs does the corpus treat as alternatives, in the sense that a provision offering one always offers the other?", "q23.cypher",
 		map[string]any{"support": 2, "limit": 100}},
+	{24, "What follows from paying wages, as a chain of acts the corpus states rather than a chain one provision asserts?", "q24.cypher",
+		map[string]any{"act": actPayWages, "limit": 100}},
+	{25, "Which acts does the corpus attach a penalty to, and which provision attaches it?", "q25.cypher",
+		map[string]any{"limit": 100}},
+	{26, "Which acts does more than one instrument name, and who takes part in them?", "q26.cypher",
+		map[string]any{"min_docs": 2, "limit": 100}},
 }
 
 // Cypher is the query text.
@@ -150,7 +167,7 @@ func writeQueryScripts(dir string) error {
 		return err
 	}
 	var index strings.Builder
-	index.WriteString("The twenty three competency questions, one file each.\n\n")
+	index.WriteString("The twenty six competency questions, one file each.\n\n")
 	index.WriteString("Every query takes parameters. In the Neo4j Browser, set them first with\n")
 	index.WriteString(":param name => value, or run them from the command line with\n")
 	index.WriteString("luatdo graph ask --question N, which fills in the defaults below.\n\n")

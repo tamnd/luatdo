@@ -11,8 +11,9 @@ package graph
 //
 // The colours group by layer rather than by taste. Documents and components are
 // blue, the definition side is green, norms and their satellites are orange, the
-// concept layer is purple, and the temporal layer is red, so a screenshot of a
-// query result says which layers it crossed before anyone reads a word of it.
+// concept layer is purple, the temporal layer is red, and the act layer is
+// amber, so a screenshot of a query result says which layers it crossed before
+// anyone reads a word of it.
 //
 // Component and Provision get identical rules because they are the same nodes
 // under two labels, and the Browser styles a node by whichever label it was
@@ -158,6 +159,14 @@ node.Conflict {
   caption: '{rule}';
 }
 
+node.Act {
+  color: #FFC454;
+  border-color: #D7A013;
+  text-color-internal: #2A2C34;
+  diameter: 65px;
+  caption: '{label_vi}';
+}
+
 relationship.CONTAINS { color: #A5ABB6; shaft-width: 1px; }
 relationship.CITES { color: #4C8EDA; shaft-width: 2px; }
 relationship.AMENDS { color: #D9534F; shaft-width: 3px; }
@@ -178,4 +187,10 @@ relationship.PRODUCES_VERSION { color: #C9302C; shaft-width: 2px; }
 relationship.TERMINATES { color: #C9302C; shaft-width: 2px; }
 relationship.CAUSED_BY { color: #D9534F; shaft-width: 2px; }
 relationship.INVOLVES { color: #C9302C; shaft-width: 2px; caption: '{side}'; }
+relationship.TRIGGERS { color: #D7A013; shaft-width: 3px; }
+relationship.PRECEDES { color: #FFC454; shaft-width: 2px; }
+relationship.PRECONDITION_OF { color: #FFC454; shaft-width: 2px; }
+relationship.PRECLUDES { color: #D7A013; shaft-width: 2px; }
+relationship.HAS_PARTICIPANT { color: #FFD86E; shaft-width: 1px; caption: '{role}'; }
+relationship.ABOUT_ACT { color: #F79767; shaft-width: 2px; caption: '{slot}'; }
 `

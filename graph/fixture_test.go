@@ -4,6 +4,7 @@ import (
 	"github.com/tamnd/luatdo/cite"
 	"github.com/tamnd/luatdo/concept"
 	"github.com/tamnd/luatdo/conflict"
+	"github.com/tamnd/luatdo/event"
 	"github.com/tamnd/luatdo/law"
 	"github.com/tamnd/luatdo/norm"
 	"github.com/tamnd/luatdo/ontology"
@@ -439,6 +440,180 @@ func fxConflicts() []conflict.Finding {
 	return conflict.Check(forms, nil).Findings
 }
 
+// The acts. Six, and each one is in the fixture because a question turns on it.
+var (
+	fxNopHoSo  = event.ID(event.Submit, "nộp hồ sơ")
+	fxCapPhep  = event.ID(event.Issue, "cấp giấy phép xây dựng")
+	fxTraLuong = event.ID(event.Pay, "trả lương")
+	fxDongBH   = event.ID(event.Pay, "đóng bảo hiểm xã hội")
+	fxKiemTra  = event.ID(event.Inspect, "kiểm tra việc đóng bảo hiểm")
+	fxPhatTien = event.ID(event.Penalise, "phạt tiền")
+)
+
+// fxActs is the act layer: what the corpus is about, folded corpus wide.
+//
+// The support counts say which questions each act answers. Paying the insurance
+// contribution is stated in the code and again in the insurance law, so it is
+// the act question 26 finds and the only one that clears two provisions in two
+// documents. Paying wages is stated twice in one instrument, which is a drafter
+// repeating themselves rather than the corpus agreeing, so it stays provisional
+// and the difference between those two cases is the thing the fixture exists to
+// keep visible.
+func fxActs() []event.Event {
+	ev := func(provision, doc, quote string) event.Evidence {
+		return event.Evidence{ProvisionID: provision, DocID: doc, Quote: quote}
+	}
+	part := func(role, conceptID, label string) event.Participant {
+		return event.Participant{Role: role, ConceptID: conceptID, LabelVI: label, SupportCount: 1}
+	}
+	return []event.Event{
+		{
+			ID: fxDongBH, Class: event.Pay, LabelVI: "đóng bảo hiểm xã hội",
+			Status: event.StatusCanonical, Confidence: 0.9, OntologyVersion: 1,
+			Aliases:      []string{"đóng bảo hiểm"},
+			Participants: []event.Participant{part(event.RoleObject, fxBHXH, "bảo hiểm xã hội")},
+			Evidence: []event.Evidence{
+				ev(fxCode+":article-99", fxCode, "đóng bảo hiểm xã hội cho người lao động"),
+				ev(fxSocial+":article-5", fxSocial, "đóng bảo hiểm cho người lao động"),
+			},
+			SupportCount: 2, SupportDocs: 2,
+		},
+		{
+			ID: fxKiemTra, Class: event.Inspect, LabelVI: "kiểm tra việc đóng bảo hiểm",
+			Status: event.StatusProvisional, Why: event.WhySingleSupport,
+			Confidence: 0.8, OntologyVersion: 1,
+			Participants: []event.Participant{part(event.RoleAgent, fxCQCTQ, "cơ quan có thẩm quyền")},
+			Evidence: []event.Evidence{
+				ev(fxSocial+":article-6", fxSocial, "kiểm tra việc đóng bảo hiểm"),
+			},
+			SupportCount: 1, SupportDocs: 1,
+		},
+		{
+			ID: fxTraLuong, Class: event.Pay, LabelVI: "trả lương",
+			Status: event.StatusProvisional, Why: event.WhySingleSupport,
+			Confidence: 0.9, OntologyVersion: 1,
+			Participants: []event.Participant{
+				part(event.RoleObject, fxTL, "tiền lương"),
+				part(event.RoleRecipient, fxNLD, "người lao động"),
+			},
+			Evidence: []event.Evidence{
+				ev(fxCode+":article-94", fxCode, "trả lương trực tiếp cho người lao động"),
+				ev(fxCode+":article-94:clause-1", fxCode, "Tiền lương được trả bằng tiền mặt"),
+			},
+			SupportCount: 2, SupportDocs: 1,
+		},
+		{
+			ID: fxPhatTien, Class: event.Penalise, LabelVI: "phạt tiền",
+			Status: event.StatusProvisional, Why: event.WhySingleSupport,
+			Confidence: 0.8, OntologyVersion: 1,
+			Evidence: []event.Evidence{
+				ev(fxCode+":article-94", fxCode, "phạt tiền từ 5.000.000 đồng đến 10.000.000 đồng"),
+			},
+			SupportCount: 1, SupportDocs: 1,
+		},
+		{
+			ID: fxNopHoSo, Class: event.Submit, LabelVI: "nộp hồ sơ",
+			Status: event.StatusProvisional, Why: event.WhySingleSupport,
+			Confidence: 0.9, OntologyVersion: 1,
+			Participants: []event.Participant{
+				part(event.RoleObject, fxHSTK, "hồ sơ thiết kế"),
+				part(event.RoleRecipient, fxCQCTQ, "cơ quan có thẩm quyền"),
+			},
+			Evidence: []event.Evidence{
+				ev(fxDecree+":article-1", fxDecree, "Chủ đầu tư nộp hồ sơ"),
+			},
+			SupportCount: 1, SupportDocs: 1,
+		},
+		{
+			ID: fxCapPhep, Class: event.Issue, LabelVI: "cấp giấy phép xây dựng",
+			Status: event.StatusProvisional, Why: event.WhySingleSupport,
+			Confidence: 0.9, OntologyVersion: 1,
+			Participants: []event.Participant{
+				part(event.RoleAgent, fxCQCTQ, "cơ quan có thẩm quyền"),
+				part(event.RoleObject, fxGPXD, "giấy phép xây dựng"),
+			},
+			Evidence: []event.Evidence{
+				ev(fxDecree+":article-1", fxDecree, "đề nghị cấp giấy phép xây dựng"),
+				ev(fxDecree+":article-2", fxDecree, "Cơ quan cấp phép trả kết quả"),
+			},
+			SupportCount: 2, SupportDocs: 1,
+		},
+	}
+}
+
+// fxChains is the consequence graph. One canonical step across two instruments,
+// one provisional step inside one, and one the blind direction pass read
+// backwards, so question 24 has a row of each kind to print.
+func fxChains() []event.Chain {
+	return []event.Chain{
+		{
+			FromID: fxDongBH, ToID: fxKiemTra, Type: event.Precedes,
+			Status: event.StatusCanonical, Direction: event.DirectionAgreed,
+			SupportCount: 2, SupportDocs: 2, Confidence: 0.9,
+			Evidence: []event.Evidence{
+				{ProvisionID: fxCode + ":article-99", DocID: fxCode, Quote: "đóng bảo hiểm xã hội"},
+				{ProvisionID: fxSocial + ":article-6", DocID: fxSocial, Quote: "kiểm tra việc đóng bảo hiểm"},
+			},
+		},
+		{
+			FromID: fxNopHoSo, ToID: fxCapPhep, Type: event.PreconditionOf,
+			Status: event.StatusProvisional, Why: event.WhySingleSupport,
+			Direction: event.DirectionAgreed, SupportCount: 1, SupportDocs: 1, Confidence: 0.9,
+			Evidence: []event.Evidence{
+				{ProvisionID: fxDecree + ":article-1", DocID: fxDecree, Quote: "nộp hồ sơ đề nghị cấp giấy phép xây dựng"},
+			},
+		},
+		{
+			FromID: fxPhatTien, ToID: fxTraLuong, Type: event.Triggers,
+			Status: event.StatusProvisional, Why: event.WhyDirectionWrong,
+			Direction: event.DirectionFlipped, SupportCount: 1, SupportDocs: 1, Confidence: 0.6,
+			Evidence: []event.Evidence{
+				{ProvisionID: fxCode + ":article-94", DocID: fxCode, Quote: "phạt tiền"},
+			},
+		},
+		// The step that closes the loop: once the permit is granted the
+		// application can no longer be made. A cycle is not a defect in a
+		// procedure graph and question 24 has to survive one.
+		{
+			FromID: fxCapPhep, ToID: fxNopHoSo, Type: event.Precludes,
+			Status: event.StatusProvisional, Why: event.WhySingleSupport,
+			Direction: event.DirectionAgreed, SupportCount: 1, SupportDocs: 1, Confidence: 0.7,
+			Evidence: []event.Evidence{
+				{ProvisionID: fxDecree + ":article-2", DocID: fxDecree, Quote: "trả kết quả"},
+			},
+		},
+		// A chain into an act the fold did not keep. The projection drops it, and
+		// neo4j-admin would have refused the whole import over it.
+		{
+			FromID: fxCapPhep, ToID: event.ID(event.Revoke, "thu hồi giấy phép"), Type: event.Precludes,
+			Status: event.StatusProvisional, SupportCount: 1, SupportDocs: 1,
+			Evidence: []event.Evidence{{ProvisionID: fxDecree + ":article-2", DocID: fxDecree, Quote: "thu hồi"}},
+		},
+	}
+}
+
+// fxNormActs joins the statements to the acts they are about.
+//
+// Both norms on article 94 name paying wages, and only one of them states a
+// penalty. That is question 25's whole difficulty: the penalty belongs to the
+// statement that states it, and a join that went through the act label instead
+// would hand the prohibition a fine no provision imposes.
+func fxNormActs() []event.Link {
+	return []event.Link{
+		{StatementID: "vn:norm:fixture-pay", ProvisionID: fxCode + ":article-94", DocID: fxCode, EventID: fxTraLuong, Kind: event.LinkAction},
+		{StatementID: "vn:norm:fixture-pay", ProvisionID: fxCode + ":article-94", DocID: fxCode, EventID: fxPhatTien, Kind: event.LinkSanction},
+		{StatementID: "vn:norm:fixture-nopay", ProvisionID: fxCode + ":article-94:clause-1", DocID: fxCode, EventID: fxTraLuong, Kind: event.LinkAction},
+		{StatementID: "vn:norm:fixture-insure", ProvisionID: fxCode + ":article-99", DocID: fxCode, EventID: fxDongBH, Kind: event.LinkAction},
+		{StatementID: "vn:norm:fixture-contribute", ProvisionID: fxSocial + ":article-5", DocID: fxSocial, EventID: fxDongBH, Kind: event.LinkAction},
+		{StatementID: "vn:norm:fixture-inspect", ProvisionID: fxSocial + ":article-6", DocID: fxSocial, EventID: fxKiemTra, Kind: event.LinkAction},
+		{StatementID: "vn:norm:fixture-apply", ProvisionID: fxDecree + ":article-1", DocID: fxDecree, EventID: fxNopHoSo, Kind: event.LinkAction},
+		{StatementID: "vn:norm:fixture-issue", ProvisionID: fxDecree + ":article-2", DocID: fxDecree, EventID: fxCapPhep, Kind: event.LinkAction},
+		// A link from a statement this projection does not write, which is dropped
+		// for the same reason the dangling chain above is.
+		{StatementID: "vn:norm:fixture-gone", ProvisionID: fxDecree + ":article-2", DocID: fxDecree, EventID: fxCapPhep, Kind: event.LinkAction},
+	}
+}
+
 // competencyFixture is the whole projection the competency tests run against.
 func competencyFixture() Input {
 	return Input{
@@ -450,6 +625,9 @@ func competencyFixture() Input {
 		Relations:  fxRelations(),
 		Temporal:   fxTemporal(),
 		Conflicts:  fxConflicts(),
+		Acts:       fxActs(),
+		Chains:     fxChains(),
+		NormActs:   fxNormActs(),
 		Definitions: []term.Definition{{
 			ProvisionID: fxCode + ":article-3", TermID: "vn:term:nguoi-lao-dong",
 			Term: "người lao động", Connective: "là",
