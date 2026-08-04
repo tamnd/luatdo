@@ -86,10 +86,19 @@ func TestRestrictKeepsAConceptOnlyWhileSomethingInTheDumpReachesIt(t *testing.T)
 			t.Errorf("relation %s to %s hangs off a concept that is not in the dump", e.FromID, e.ToID)
 		}
 	}
-	// The hierarchy under the state agency goes with the concepts. The permit
-	// chain stays, because the permit and its design file are both still reached.
-	if len(got.Relations) != 1 {
-		t.Errorf("relations: got %d, want the one prerequisite edge that stays inside", len(got.Relations))
+	// The design file is reached by nothing in the norm layer inside this
+	// campaign. It arrives because the decree's application act names it as the
+	// thing submitted, and that is the whole argument for letting an act keep a
+	// concept alive: without it the dump holds the act and none of the parties
+	// to it.
+	if !reachable[fxHSTK] {
+		t.Error("the design file is a party to an act the dump keeps and was cut anyway")
+	}
+	// The hierarchy under the state agency goes with the concepts. What stays is
+	// the wage to insurance edge and the permit prerequisite, the second of which
+	// only survives because the act layer kept the design file.
+	if len(got.Relations) != 2 {
+		t.Errorf("relations: got %d, want the two edges whose ends are both still inside", len(got.Relations))
 	}
 }
 

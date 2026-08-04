@@ -60,6 +60,14 @@ var counters = []struct {
 	{"events", "MATCH (e:" + EventLabel + ") RETURN count(e) AS n", func(s Summary) int { return s.Events }},
 	{"temporal_versions", "MATCH (v:" + TemporalVersionLabel + ") RETURN count(v) AS n", func(s Summary) int { return s.TemporalVersions }},
 	{"temporal_edges", "MATCH ()-[r:" + HasTemporalVersion + "|" + Includes + "|" + CausedBy + "|" + Terminates + "|" + ProducesVersion + "]->() RETURN count(r) AS n", func(s Summary) int { return s.TemporalEdges }},
+	{"acts", "MATCH (a:" + ActLabel + ") RETURN count(a) AS n", func(s Summary) int { return s.Acts }},
+	// The chain types are listed for the same reason the relation types are, and
+	// the participant edges are counted apart from them because the two fail
+	// differently: a chain goes missing when an act does, and a participant goes
+	// missing when the concept layer moves under it.
+	{"act_chains", "MATCH ()-[r:" + strings.Join(ActChainTypes(), "|") + "]->() RETURN count(r) AS n", func(s Summary) int { return s.ActChains }},
+	{"act_participants", "MATCH ()-[r:" + HasParticipant + "]->() RETURN count(r) AS n", func(s Summary) int { return s.ActParticipants }},
+	{"norm_acts", "MATCH ()-[r:" + AboutAct + "]->() RETURN count(r) AS n", func(s Summary) int { return s.NormActs }},
 }
 
 // Live counts what the database currently holds.

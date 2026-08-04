@@ -426,6 +426,81 @@ var liveAnswers = []answer{
 				t.Errorf("support: got %d, want 3", p)
 			}
 		}},
+	{n: 24, why: "the insurance contribution is followed by the inspection, in the other instrument", params: map[string]any{"act": fxDongBH}, rows: 1,
+		check: func(t *testing.T, got []map[string]any) {
+			eq(t, "consequence", str(t, got[0], "consequence"), "kiểm tra việc đóng bảo hiểm")
+			if s := list(t, got[0], "steps"); len(s) != 1 || s[0] != "PRECEDES" {
+				t.Errorf("steps: got %v, want [PRECEDES]", s)
+			}
+			// The step is the only canonical one in the fixture, and it is
+			// canonical because two instruments state it. The act it arrives at
+			// is still provisional, and the row carries both so a reader is not
+			// left to assume one from the other.
+			if s := list(t, got[0], "step_status"); len(s) != 1 || s[0] != "canonical" {
+				t.Errorf("step status: got %v, want [canonical]", s)
+			}
+			eq(t, "act status", str(t, got[0], "act_status"), "provisional")
+			if n := list(t, got[0], "instruments"); len(n) != 1 || n[0] != int64(2) {
+				t.Errorf("instruments behind the step: got %v, want [2]", n)
+			}
+		}},
+	{n: 24, why: "the permit procedure is a cycle, and the walk goes round it once and stops", params: map[string]any{"act": fxNopHoSo}, rows: 2,
+		check: func(t *testing.T, got []map[string]any) {
+			eq(t, "one step out", str(t, got[0], "consequence"), "cấp giấy phép xây dựng")
+			// Two steps out is the application again, because granting the permit
+			// precludes making it. Cypher will not walk a relationship twice, so
+			// the loop closes here rather than running to the depth limit.
+			eq(t, "two steps out", str(t, got[1], "consequence"), "nộp hồ sơ")
+			if d := num(t, got[1], "depth"); d != 2 {
+				t.Errorf("depth of the closing step: got %d, want 2", d)
+			}
+			if s := list(t, got[1], "steps"); len(s) != 2 || s[0] != "PRECONDITION_OF" || s[1] != "PRECLUDES" {
+				t.Errorf("steps round the loop: got %v, want [PRECONDITION_OF PRECLUDES]", s)
+			}
+		}},
+	{n: 24, why: "the fine reads as triggering the wage payment, which is the direction pass disagreeing", params: map[string]any{"act": fxPhatTien}, rows: 1,
+		check: func(t *testing.T, got []map[string]any) {
+			eq(t, "consequence", str(t, got[0], "consequence"), "trả lương")
+			// The point of the row. The step is in the graph, and the verdict of
+			// the blind pass travels with it, so the reader sees a chain nobody
+			// has agreed the direction of rather than a chain that reads settled.
+			if d := list(t, got[0], "direction"); len(d) != 1 || d[0] != "flipped" {
+				t.Errorf("direction: got %v, want [flipped]", d)
+			}
+		}},
+	{n: 25, why: "one statement on article 94 names both an act and a penalty, and the prohibition beside it names neither", rows: 1,
+		check: func(t *testing.T, got []map[string]any) {
+			eq(t, "act", str(t, got[0], "act"), "trả lương")
+			eq(t, "penalty", str(t, got[0], "penalty"), "phạt tiền")
+			eq(t, "type", str(t, got[0], "norm_type"), "duty")
+			eq(t, "provision", str(t, got[0], "stated_in"), fxCode+":article-94")
+			eq(t, "basis", str(t, got[0], "legal_basis"), "Điều 17 Nghị định 12/2022/NĐ-CP")
+			// The row count is the assertion that matters. Both norms on article
+			// 94 are about paying wages, and a join through the act label rather
+			// than through the statement would report the prohibition as fined
+			// too, which no provision says.
+		}},
+	{n: 26, why: "only the insurance contribution is named by two instruments", rows: 1,
+		check: func(t *testing.T, got []map[string]any) {
+			eq(t, "act", str(t, got[0], "act"), "đóng bảo hiểm xã hội")
+			eq(t, "status", str(t, got[0], "status"), "canonical")
+			if n := num(t, got[0], "instruments"); n != 2 {
+				t.Errorf("instruments: got %d, want 2", n)
+			}
+			named := list(t, got[0], "named_in")
+			if len(named) != 2 || named[0] != fxSocial || named[1] != fxCode {
+				t.Errorf("named in: got %v, want the 2014 law then the 2019 code", named)
+			}
+			if a := list(t, got[0], "also_written"); len(a) != 1 || a[0] != "đóng bảo hiểm" {
+				t.Errorf("aliases: got %v, want [đóng bảo hiểm]", a)
+			}
+			if p := list(t, got[0], "participants"); len(p) != 1 || p[0] != "OBJECT: bảo hiểm xã hội" {
+				t.Errorf("participants: got %v, want [OBJECT: bảo hiểm xã hội]", p)
+			}
+			// Paying wages is stated twice and both times in the code, so it is
+			// absent here. The difference between repetition and corroboration is
+			// the whole reason the layer counts documents as well as provisions.
+		}},
 }
 
 // params merges an entry's overrides over the question's shipped defaults, so

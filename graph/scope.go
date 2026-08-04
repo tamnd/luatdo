@@ -2,6 +2,7 @@ package graph
 
 import (
 	"github.com/tamnd/luatdo/concept"
+	"github.com/tamnd/luatdo/event"
 	"github.com/tamnd/luatdo/norm"
 	"github.com/tamnd/luatdo/relation"
 	"github.com/tamnd/luatdo/temporal"
@@ -92,7 +93,10 @@ func Restrict(in Input, keep map[string]bool) Input {
 		}
 	}
 
-	out.Layer, out.Relations = restrictConcepts(in, out.Statements, keep)
+	// The acts are cut before the concepts, because a party to a surviving act is
+	// one of the reasons a concept survives.
+	out.Acts, out.Chains, out.NormActs = restrictActs(in, out.Statements, keep, components)
+	out.Layer, out.Relations = restrictConcepts(in, out.Statements, out.Acts, keep)
 	out.Temporal = restrictTemporal(in.Temporal, keep)
 	return out
 }
@@ -113,11 +117,12 @@ func inDump(docID, componentID string, keep, components map[string]bool) bool {
 // restrictConcepts cuts the concept layer and the relation edges to what the
 // remaining documents still reach.
 //
-// A concept survives when a surviving term use was merged into it or a
-// surviving norm is about it. Nothing else keeps one: a concept whose every
-// mention was in a document the campaign excluded is a node with no edges, and
-// a dump full of those is a dump whose concept count means nothing.
-func restrictConcepts(in Input, statements []norm.Record, keep map[string]bool) (*concept.Layer, []relation.Edge) {
+// A concept survives when a surviving term use was merged into it, a surviving
+// norm is about it, or it plays a part in a surviving act. Nothing else keeps
+// one: a concept whose every mention was in a document the campaign excluded is
+// a node with no edges, and a dump full of those is a dump whose concept count
+// means nothing.
+func restrictConcepts(in Input, statements []norm.Record, acts []event.Event, keep map[string]bool) (*concept.Layer, []relation.Edge) {
 	if in.Layer == nil {
 		return nil, nil
 	}
@@ -144,6 +149,16 @@ func restrictConcepts(in Input, statements []norm.Record, keep map[string]bool) 
 		for _, ref := range []*norm.Ref{s.Bearer, s.Counterparty, &s.Action, s.Object} {
 			if ref != nil && ref.ConceptID != "" {
 				reached[ref.ConceptID] = true
+			}
+		}
+	}
+	// A party to an act the dump keeps. Without this the dump would hold the act
+	// and lose whoever the corpus says takes part in it, which is most of what
+	// makes an act worth having a node for.
+	for _, e := range acts {
+		for _, p := range e.Participants {
+			if p.ConceptID != "" {
+				reached[p.ConceptID] = true
 			}
 		}
 	}
@@ -204,6 +219,72 @@ func restrictTemporal(in *temporal.Layer, keep map[string]bool) *temporal.Layer 
 		out.Events = append(out.Events, e)
 	}
 	return out
+}
+
+// restrictActs cuts the act layer to the acts the remaining documents still
+// state, along with the chains between them and the norm slot links into them.
+//
+// An act survives when a surviving provision is evidence for it, or when a
+// surviving statement names it in one of its slots. The second half matters
+// because an act is folded corpus wide: a decree can name an act that only the
+// law it guides ever spells out, and dropping the act would take the decree's
+// own ABOUT_ACT edge with it, which is the join the campaign was cut to look at.
+//
+// What is not cut is the act's own record. The support counts, the status and
+// the document list are statements about the whole corpus, and recomputing them
+// inside a campaign would report an act two instruments corroborate as one
+// instrument's provisional guess. A dump is a smaller view of the corpus, not a
+// smaller corpus, and the numbers on these nodes say which one they describe by
+// naming documents the dump may not hold.
+func restrictActs(in Input, statements []norm.Record, keep, components map[string]bool) ([]event.Event, []event.Chain, []event.Link) {
+	if len(in.Acts) == 0 {
+		return nil, nil, nil
+	}
+	norms := make(map[string]bool, len(statements))
+	for i := range statements {
+		norms[statements[i].ID] = true
+	}
+	var links []event.Link
+	named := map[string]bool{}
+	for _, l := range in.NormActs {
+		if !norms[l.StatementID] {
+			continue
+		}
+		links = append(links, l)
+		named[l.EventID] = true
+	}
+
+	var acts []event.Event
+	kept := map[string]bool{}
+	for _, e := range in.Acts {
+		if !named[e.ID] && !statedIn(e.Evidence, keep, components) {
+			continue
+		}
+		acts = append(acts, e)
+		kept[e.ID] = true
+	}
+
+	// Both ends, for the reason every other edge in this file needs both ends. A
+	// chain is also the one thing here that can point at an act no document in
+	// the dump mentions at all, because the act at the far end of it is the
+	// consequence rather than the subject.
+	var chains []event.Chain
+	for _, c := range in.Chains {
+		if kept[c.FromID] && kept[c.ToID] {
+			chains = append(chains, c)
+		}
+	}
+	return acts, chains, links
+}
+
+// statedIn answers whether any of an act's sightings is in the dump.
+func statedIn(evidence []event.Evidence, keep, components map[string]bool) bool {
+	for _, ev := range evidence {
+		if inDump(ev.DocID, ev.ProvisionID, keep, components) {
+			return true
+		}
+	}
+	return false
 }
 
 func surviving(ids []string, keep map[string]bool) []string {

@@ -318,6 +318,43 @@ func Merge(ctx context.Context, target Target, in Input) error {
 		return err
 	}
 
+	var actRows, participantRows, aboutActRows []map[string]any
+	chainRows := map[string][]map[string]any{}
+	if err := eachAct(in, func(a actNode) error {
+		actRows = append(actRows, a.fields())
+		return nil
+	}); err != nil {
+		return err
+	}
+	if err := eachActChain(in, func(c chainEdge) error {
+		chainRows[c.Type] = append(chainRows[c.Type], map[string]any{
+			"from": c.From, "to": c.To, "status": c.Status, "why": c.Why,
+			"support": c.Support, "support_docs": c.SupportDocs,
+			"confidence": c.Confidence, "direction": c.Direction,
+			"quote": c.Quote, "provision_id": c.ProvisionID,
+		})
+		return nil
+	}); err != nil {
+		return err
+	}
+	if err := eachActParticipant(in, func(p participantEdge) error {
+		participantRows = append(participantRows, map[string]any{
+			"from": p.ActID, "to": p.ConceptID, "role": p.Role,
+			"as_written": p.AsWritten, "support": p.Support,
+		})
+		return nil
+	}); err != nil {
+		return err
+	}
+	if err := eachNormAct(in, func(l normActEdge) error {
+		aboutActRows = append(aboutActRows, map[string]any{
+			"from": l.NormID, "to": l.ActID, "slot": l.Slot, "provision_id": l.ProvisionID,
+		})
+		return nil
+	}); err != nil {
+		return err
+	}
+
 	for _, statement := range []string{
 		"CREATE CONSTRAINT doc_id IF NOT EXISTS FOR (d:Document) REQUIRE d.id IS UNIQUE",
 		"CREATE CONSTRAINT component_id IF NOT EXISTS FOR (c:Component) REQUIRE c.id IS UNIQUE",
@@ -334,6 +371,7 @@ func Merge(ctx context.Context, target Target, in Input) error {
 		"CREATE CONSTRAINT event_id IF NOT EXISTS FOR (e:" + EventLabel + ") REQUIRE e.id IS UNIQUE",
 		"CREATE CONSTRAINT temporal_version_id IF NOT EXISTS FOR (v:" + TemporalVersionLabel + ") REQUIRE v.id IS UNIQUE",
 		"CREATE CONSTRAINT conflict_id IF NOT EXISTS FOR (c:" + ConflictLabel + ") REQUIRE c.id IS UNIQUE",
+		"CREATE CONSTRAINT act_id IF NOT EXISTS FOR (a:" + ActLabel + ") REQUIRE a.id IS UNIQUE",
 	} {
 		if _, err := session.ExecuteWrite(ctx, func(tx neo4j.ManagedTransaction) (any, error) {
 			return tx.Run(ctx, statement, nil)
@@ -468,7 +506,30 @@ func Merge(ctx context.Context, target Target, in Input) error {
 		step{"UNWIND $rows AS r MERGE (c:" + ConflictLabel + " {id: r.id}) SET c += r", conflictRows},
 		step{"UNWIND $rows AS r MATCH (a:" + ConflictLabel + " {id: r.from}), (b:Norm {id: r.to}) " +
 			"MERGE (a)-[e:" + Involves + "]->(b) SET e.side = r.side", involvesRows},
+		step{"UNWIND $rows AS r MERGE (a:" + ActLabel + " {id: r.id}) SET a += r", actRows},
+		// The role is part of the merge key, for the reason ABOUT_CONCEPT gives.
+		// A body that both grants a licence and is notified about it holds two
+		// claims, and one edge keyed on the pair alone would keep the last.
+		step{"UNWIND $rows AS r MATCH (a:" + ActLabel + " {id: r.from}), (b:Concept {id: r.to}) " +
+			"MERGE (a)-[e:" + HasParticipant + " {role: r.role}]->(b) " +
+			"SET e.as_written = r.as_written, e.support = r.support", participantRows},
+		// The slot is part of the key as well. A provision that requires a filing
+		// and fines the failure to file names one act in both slots, and folding
+		// the two into one edge would lose which of them the penalty hangs off,
+		// which is the whole basis of question 25.
+		step{"UNWIND $rows AS r MATCH (a:Norm {id: r.from}), (b:" + ActLabel + " {id: r.to}) " +
+			"MERGE (a)-[e:" + AboutAct + " {slot: r.slot}]->(b) SET e.provision_id = r.provision_id", aboutActRows},
 	)
+	// One statement per chain type, the same way the concept relations are
+	// written, and with both labels named so the merge uses the constraint rather
+	// than reading every node twice per row.
+	for _, relType := range ActChainTypes() {
+		steps = append(steps, step{"UNWIND $rows AS r MATCH (a:" + ActLabel + " {id: r.from}), (b:" + ActLabel + " {id: r.to}) " +
+			"MERGE (a)-[e:" + relType + "]->(b) " +
+			"SET e.status = r.status, e.why = r.why, e.support = r.support, e.support_docs = r.support_docs, " +
+			"e.confidence = r.confidence, e.direction = r.direction, e.quote = r.quote, e.provision_id = r.provision_id",
+			chainRows[relType]})
+	}
 	for _, step := range steps {
 		if err := run(step.query, step.rows); err != nil {
 			return fmt.Errorf("merge: %w", err)

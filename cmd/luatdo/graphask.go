@@ -12,7 +12,7 @@ import (
 
 func init() {
 	commands = append(commands,
-		command{"graph", "ask the projected graph one of the twenty three competency questions", cmdGraph},
+		command{"graph", "ask the projected graph one of the twenty six competency questions", cmdGraph},
 	)
 }
 
@@ -57,7 +57,7 @@ func (p paramFlag) Set(value string) error {
 // when the shipped question is nearly but not quite the one they wanted.
 func cmdGraph(args []string) error {
 	fs := flag.NewFlagSet("graph", flag.ContinueOnError)
-	question := fs.Int("question", 0, "question number, 1 to 23")
+	question := fs.Int("question", 0, "question number, 1 to 26")
 	limit := fs.Int("limit", 0, "override the row limit the question ships with")
 	params := paramFlag{}
 	fs.Var(params, "param", "override one parameter, as name=value, repeatable")
@@ -97,11 +97,11 @@ func cmdGraph(args []string) error {
 
 func pickQuestion(n int) (graph.Question, error) {
 	if n == 0 {
-		return graph.Question{}, fmt.Errorf("pass --question N, or run luatdo graph list to see the twenty three")
+		return graph.Question{}, fmt.Errorf("pass --question N, or run luatdo graph list to see the twenty six")
 	}
 	q, ok := graph.QuestionByNumber(n)
 	if !ok {
-		return graph.Question{}, fmt.Errorf("there is no question %d, the problem statement asks 23", n)
+		return graph.Question{}, fmt.Errorf("there is no question %d, the problem statement asks 23 and the act layer adds 3", n)
 	}
 	return q, nil
 }

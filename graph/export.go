@@ -17,6 +17,7 @@ import (
 	"github.com/tamnd/luatdo/cite"
 	"github.com/tamnd/luatdo/concept"
 	"github.com/tamnd/luatdo/conflict"
+	"github.com/tamnd/luatdo/event"
 	"github.com/tamnd/luatdo/law"
 	"github.com/tamnd/luatdo/link"
 	"github.com/tamnd/luatdo/norm"
@@ -66,6 +67,10 @@ CREATE INDEX temporal_version_interval IF NOT EXISTS FOR (v:TemporalVersion) ON 
 CREATE INDEX temporal_version_force IF NOT EXISTS FOR (v:TemporalVersion) ON (v.force);
 CREATE CONSTRAINT conflict_id IF NOT EXISTS FOR (c:Conflict) REQUIRE c.id IS UNIQUE;
 CREATE INDEX conflict_rule IF NOT EXISTS FOR (c:Conflict) ON (c.rule, c.circumstances);
+CREATE CONSTRAINT act_id IF NOT EXISTS FOR (a:Act) REQUIRE a.id IS UNIQUE;
+CREATE INDEX act_class IF NOT EXISTS FOR (a:Act) ON (a.class);
+CREATE INDEX act_status IF NOT EXISTS FOR (a:Act) ON (a.status);
+CREATE FULLTEXT INDEX act_text IF NOT EXISTS FOR (a:Act) ON EACH [a.label_vi, a.definition];
 `
 
 // componentLabels is what a component node carries. law.ProvisionAlias rides
@@ -114,6 +119,18 @@ type Input struct {
 	// norms, and the projection drops any finding whose norms this export did
 	// not write.
 	Conflicts []conflict.Finding
+	// Acts are the acts the corpus regulates, folded corpus wide. Chains are
+	// the act to act edges, and NormActs joins a statement to the act its action
+	// or its sanction slot names.
+	//
+	// The three are separate fields rather than one layer struct because they
+	// are checked against different things: a chain needs both of its acts, a
+	// participant needs the concept layer, and a norm slot link needs
+	// Statements. A projection handed the chains without the acts writes edges
+	// into nodes that are not there.
+	Acts     []event.Event
+	Chains   []event.Chain
+	NormActs []event.Link
 }
 
 // Export writes the CSV projection into dir.
@@ -497,6 +514,46 @@ func Export(dir string, in Input) error {
 					return err
 				}
 				return w.Write([]string{c.ID, c.NormB, "b", Involves})
+			})
+		}); err != nil {
+		return err
+	}
+	if err := writeCSV(filepath.Join(dir, "acts.csv"), nodeHeader(actColumns, actColumnTypes),
+		func(w *csv.Writer) error {
+			return eachAct(in, func(a actNode) error {
+				return w.Write(append(append([]string{a.ID}, a.values()...), ActLabel))
+			})
+		}); err != nil {
+		return err
+	}
+	if err := writeCSV(filepath.Join(dir, "act_chains.csv"),
+		[]string{":START_ID", ":END_ID", "status", "why", "support:int", "support_docs:int",
+			"confidence:float", "direction", "quote", "provision_id", ":TYPE"},
+		func(w *csv.Writer) error {
+			return eachActChain(in, func(c chainEdge) error {
+				return w.Write([]string{c.From, c.To, c.Status, c.Why,
+					strconv.Itoa(c.Support), strconv.Itoa(c.SupportDocs),
+					strconv.FormatFloat(c.Confidence, 'f', 2, 64), c.Direction,
+					c.Quote, c.ProvisionID, c.Type})
+			})
+		}); err != nil {
+		return err
+	}
+	if err := writeCSV(filepath.Join(dir, "act_participants.csv"),
+		[]string{":START_ID", ":END_ID", "role", "as_written", "support:int", ":TYPE"},
+		func(w *csv.Writer) error {
+			return eachActParticipant(in, func(p participantEdge) error {
+				return w.Write([]string{p.ActID, p.ConceptID, p.Role, p.AsWritten,
+					strconv.Itoa(p.Support), HasParticipant})
+			})
+		}); err != nil {
+		return err
+	}
+	if err := writeCSV(filepath.Join(dir, "about_act.csv"),
+		[]string{":START_ID", ":END_ID", "slot", "provision_id", ":TYPE"},
+		func(w *csv.Writer) error {
+			return eachNormAct(in, func(l normActEdge) error {
+				return w.Write([]string{l.NormID, l.ActID, l.Slot, l.ProvisionID, AboutAct})
 			})
 		}); err != nil {
 		return err
@@ -965,6 +1022,7 @@ func writeImportScripts(dir string) error {
 		`--nodes=norms.csv --nodes=norm_details.csv ` +
 		`--nodes=term_uses.csv --nodes=merged_concepts.csv ` +
 		`--nodes=events.csv --nodes=temporal_versions.csv --nodes=conflicts.csv ` +
+		`--nodes=acts.csv ` +
 		`--relationships=contains.csv --relationships=has_version.csv --relationships=cites.csv ` +
 		`--relationships=defines.csv --relationships=mentions.csv ` +
 		`--relationships=subject_parents.csv --relationships=about_subject.csv ` +
@@ -972,7 +1030,9 @@ func writeImportScripts(dir string) error {
 		`--relationships=instance_of.csv --relationships=differs_from.csv ` +
 		`--relationships=term_use_edges.csv ` +
 		`--relationships=relations.csv --relationships=about_concept.csv ` +
-		`--relationships=temporal_edges.csv --relationships=involves.csv`
+		`--relationships=temporal_edges.csv --relationships=involves.csv ` +
+		`--relationships=act_chains.csv --relationships=act_participants.csv ` +
+		`--relationships=about_act.csv`
 	sh := "#!/bin/sh\n# Run from this directory, which must be writable, with the database stopped.\nneo4j-admin " + args + "\n"
 	cmd := "@echo off\r\nrem Run from this directory, which must be writable, with the database stopped.\r\nneo4j-admin " + args + "\r\n"
 	if err := os.WriteFile(filepath.Join(dir, "import.sh"), []byte(sh), 0o755); err != nil {
@@ -1041,6 +1101,18 @@ type Summary struct {
 	// never meet.
 	Conflicts int `json:"conflicts"`
 	Shared    int `json:"conflicts_shared"`
+
+	// Acts and ActChains are the consequence graph. ChainsOnOneProvision is the
+	// part of it that rests on a single sentence, and it is reported beside the
+	// total rather than subtracted from it, because this projection ships those
+	// chains and a reader is owed the proportion before they walk one.
+	Acts                 int `json:"acts"`
+	ActChains            int `json:"act_chains"`
+	ChainsOnOneProvision int `json:"act_chains_on_one_provision"`
+	ActParticipants      int `json:"act_participants"`
+	// NormActs is the join between the norm layer and the act layer, and it is
+	// the number that says whether the action slot stopped being a dead end.
+	NormActs int `json:"norm_acts"`
 }
 
 // Summarize counts the projection without writing it.
@@ -1137,6 +1209,25 @@ func Summarize(in Input) Summary {
 		}
 		return nil
 	})
+	_ = eachAct(in, func(actNode) error {
+		s.Acts++
+		return nil
+	})
+	_ = eachActChain(in, func(c chainEdge) error {
+		s.ActChains++
+		if c.Support <= 1 {
+			s.ChainsOnOneProvision++
+		}
+		return nil
+	})
+	_ = eachActParticipant(in, func(participantEdge) error {
+		s.ActParticipants++
+		return nil
+	})
+	_ = eachNormAct(in, func(normActEdge) error {
+		s.NormActs++
+		return nil
+	})
 	return s
 }
 
@@ -1178,6 +1269,10 @@ func (s Summary) String() string {
 	}
 	if s.Conflicts > 0 {
 		out += fmt.Sprintf(", conflicts %d of which %d on shared circumstances", s.Conflicts, s.Shared)
+	}
+	if s.Acts > 0 {
+		out += fmt.Sprintf(", acts %d, chains %d of which %d rest on one provision, participants %d, norms joined to acts %d",
+			s.Acts, s.ActChains, s.ChainsOnOneProvision, s.ActParticipants, s.NormActs)
 	}
 	return out
 }

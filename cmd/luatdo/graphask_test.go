@@ -38,8 +38,14 @@ func TestPickQuestionRefusesANumberNobodyAsks(t *testing.T) {
 	if _, err := pickQuestion(0); err == nil {
 		t.Error("no question number was accepted")
 	}
-	if _, err := pickQuestion(24); err == nil {
-		t.Error("question 24 was accepted, and the problem statement asks 23")
+	if _, err := pickQuestion(27); err == nil {
+		t.Error("question 27 was accepted, and there are twenty six")
+	}
+	// Question 24 is the first the act layer added, and the command has to reach
+	// the new ones or they ship queryable by everything except the tool the
+	// README tells a reader to use.
+	if q, err := pickQuestion(24); err != nil || q.N != 24 {
+		t.Errorf("question 24: %v, %v", q.N, err)
 	}
 	q, err := pickQuestion(20)
 	if err != nil || q.N != 20 {

@@ -73,10 +73,10 @@ luatdo ontology init
 luatdo export neo4j
 ```
 
-Then ask the graph one of the twenty three competency questions, without writing any Cypher:
+Then ask the graph one of the twenty six competency questions, without writing any Cypher:
 
 ```sh
-luatdo graph list                 # the twenty three, and the parameters each takes
+luatdo graph list                 # the twenty six, and the parameters each takes
 luatdo graph ask --question 20    # which norms a later redefinition put in doubt
 ```
 
@@ -140,7 +140,7 @@ RETURN path
 | `luatdo export neo4j` | Project the trusted store into Neo4j, full import or incremental merge, scoped to a campaign |
 | `luatdo export rdf` | Project that dump into N-Triples, with the vocabulary alignment shipped beside the data |
 | `luatdo export legalruleml` | Write one measured campaign's trusted norms as LegalRuleML, with the release gates enforced |
-| `luatdo graph` | Ask the projected graph one of the twenty three competency questions |
+| `luatdo graph` | Ask the projected graph one of the twenty six competency questions |
 | `luatdo coverage` | Report what is parsed, extracted, verified, and exported, recomputed from disk |
 | `luatdo run` | The campaign: work the coverage queue with parallel workers until it is empty |
 | `luatdo campaign` | Scope a named campaign and report what it has covered |
@@ -572,6 +572,53 @@ On the labour and tax scope the detector reports nothing, over 671 comparable fo
 A run that reports nothing is either a clean scope or a detector that could never have fired, and a funnel ending in zero cannot tell those apart, so the check prints what the scope gave the rules to work with: 467 obligations, 8 prohibitions, 79 permissions, 117 rights, 43 deadlines counted from an event and no sanction at all.
 Both operator rules need a prohibition on one side and there are eight, and the sanction rule cannot fire anywhere in this scope whatever the norms say.
 That is the honest reading of the zero, and it is printed beside it.
+
+## What follows from what
+
+The norm layer puts the act a provision is about into a slot, and that slot is a string that points at nothing.
+So the graph knows that a service enterprise must hand its licence back, and it cannot walk from handing the licence back to what happens next, even though the next step is in the same law and was read at the same time.
+This pass makes the acts themselves into nodes.
+
+```sh
+luatdo events extract --campaign labour-2025   # the acts each provision names, and their parties
+luatdo events build                            # fold them corpus wide, with the chains and the norm links
+luatdo events verify                           # read every chain again without showing it the claim
+luatdo events ask 24 vn:event:issue:cap-giay-phep
+luatdo events propose                          # the act types the registry did not hold
+luatdo events ablate                           # what the layer would lose if identity stopped at the document
+```
+
+An act is a class from a closed registry and a short Vietnamese label, and its identifier is built from those two, so the same act named in a law and in the decree that implements it is one node without anybody matching strings afterwards.
+The chains are the four a procedure needs: one act triggers another, comes before it, is a precondition of it, or rules it out.
+Every chain is then read a second time by a model that is shown the two acts and the sentence and is never shown which way the first pass pointed the arrow, and the verdict is stored beside the chain rather than replacing it.
+The links from a norm to its act and to its penalty are written while one provision is in view, so both came out of one paragraph instead of out of a label that happens to occur twice in the corpus.
+
+```text
+5 documents read, 167 provisions named an act
+events         362, 0 canonical, 362 provisional, 191 invented classes
+participants   0
+chains         100, 0 canonical
+norm links     247, 247 actions, 0 sanctions
+chain direction 100 chains: 88 agreed, 2 flipped, 10 unclear, 0 unchecked
+```
+
+Sixty of those provisions were annotated by hand before the pass ran over them, and the pass scores 0.35 precision and 0.47 recall against them, with 0.65 of the matched acts given the class the annotation gives.
+Acts are matched on the label alone, which is a hard ruler: 23 of the 53 acts scored as missed have an act on the same provision whose label contains the annotated one or is contained by it, such as ký kết hợp đồng against ký kết hợp đồng liên quan đến việc người lao động đi làm việc ở nước ngoài.
+The pass writes the label the clause uses and the registry asks for the label the corpus uses, and nothing in this milestone folds one into the other.
+Chains score worse than that, one match against 21 missed and 29 invented, because a chain is matched on both of its labels at once and both have to survive the same ruler.
+Where the two agree the arrow is right, and the blind second pass puts the same reading on 88 of the 90 chains it would commit to.
+
+The class registry is the part that did not hold.
+Of 362 acts, 191 carry a class the registry does not have, and the tail is not a tail: the run invented ORGANIZE_COMPILATION, RECEIVE_DOSSIER and TRANG_BI_KIEN_THUC_NANG_LUC, and it wrote class names in Vietnamese and in English in the same document.
+They are all in the candidates queue with their evidence and their counts, which is where the seed registry said they would go, and reading that queue is a milestone of its own rather than an argument for opening the registry to the model.
+
+The ablation is the result this milestone turns on, and it is negative.
+Corpus wide act identity merged nothing: no act in this campaign is named in more than one instrument, so the identifier that spans documents changed no answer to question 24 and lost no consequence.
+The join from a penalty to the act it punishes changed nothing either, because the scope produced 247 action links and no sanction link at all.
+Both are real results about a campaign of two instruments on two different subjects, one on workers abroad and one on vocational training, and neither says anything yet about a corpus where a law and its decree are both in scope.
+
+Participants are zero for a reason worth saying plainly: the concept layer has no mention report for either instrument, so the pass was offered no concepts and could not fill a role even where the provision names the party.
+The role edges are built and tested in the projection, and they are unmeasured on this campaign.
 
 ## Running a campaign
 
