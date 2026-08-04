@@ -134,6 +134,9 @@ RETURN path
 | `luatdo verify` | Run a verification stage on its own, and train and measure the cheap entailment gate |
 | `luatdo omission` | Audit what the pass never said anything about, by surface form and by re-extraction |
 | `luatdo ask` | Answer the norm competency questions over the trusted store |
+| `luatdo retrieve` | Rank components for a question in Vietnamese, scoped before anything is ranked |
+| `luatdo answer` | Answer that question with claims a trusted statement supports, or refuse |
+| `luatdo statute` | Run the committed statute benchmark and score construction, retrieval and generation apart |
 | `luatdo conflicts` | Put trusted statements in a comparable form and find the pairs that cannot both be obeyed |
 | `luatdo temporal` | Read amending instructions, build the version graph, and answer questions at a date |
 | `luatdo prompt` | Print the exact prompt for a provision without calling a model |
@@ -847,6 +850,150 @@ The baselines are the two systems this project would have to beat to be worth bu
 Both answer 2 of the 23 competency questions from a layer that means what it says.
 The ablations remove one layer at a time from the full system, and the concept layer is worth 14 questions, the temporal layer 7, and conditions and exceptions 3.
 Those are counts of questions the design can answer, not of answers checked against a gold set, and the report says which it is.
+
+## Asking it a question
+
+Everything above builds a graph and measures how it was built.
+This is the part where a person types a question in Vietnamese and gets sentences back, and the whole of it turns on one rule: the answerer may assert nothing that a trusted statement does not support.
+
+```sh
+luatdo retrieve --k 5 --explain "Người sử dụng lao động phải trả lương khi nào?"
+luatdo answer --k 6 "Cơ quan thuế phải giải quyết khiếu nại về thuế trong thời hạn bao lâu?"
+luatdo statute --mode graph --generate --out run.json
+```
+
+Scope is applied before anything is ranked, and that ordering is the point rather than an optimisation.
+`--doc`, `--subject`, `--component`, `--kind`, `--date` and `--statements` each narrow the candidate set, and filtering after the ranking would spend k on components the caller already said were out of scope.
+Every filter prints how many components it dropped and why, because a scope that quietly empties itself looks exactly like a corpus with nothing in it.
+
+The index is multi aspect, and four of the nine aspects are built from the graph rather than from the words.
+Text and heading are what the drafter wrote, term and citation come from the definition and citation layers, and bearer, action, condition, deadline and sanction are assembled from the trusted statements extracted out of that component.
+That is what the graph buys here.
+An article stem that says `phải` and never names who is bound is reachable through the bearer its own statements carry, and no lexical index over the prose alone can do that.
+The weights are not tuned against the benchmark below, and they will not be, because tuning them on the same twenty six questions that score them turns a measurement into a fit.
+
+Similarity is lexical.
+It is BM25 over Vietnamese syllables and syllable bigrams, per aspect, combined by weight.
+There is no embedding route in this repository and no embedding code anywhere in it, so nothing here should be read as semantic search, and the ceiling is visible in the results: a long question shares many ordinary words with a long provision, and BM25 will prefer that provision over the short clause that actually answers it.
+
+The unit of retrieval is a component, and what may be quoted from it is its span, which is its own words followed by the words of everything nested under it.
+That distinction cost six claims on the first generation run.
+`Điều 16 khoản 2` of the customs law is the stem `Khi làm thủ tục hải quan, công chức hải quan phải:` and its four duties live in `điểm a` through `điểm d` as separate components, so a model handed the clause text alone quoted a duty that the clause does not contain and the grounding check deleted a correct sentence.
+Ranking still uses the component's own words, quoting uses the span, and generation went from 0.682 to 0.818 with the drops going from six to zero.
+
+A question can be asked at a date, and this is where the temporal layer says out loud that it does not know.
+
+```text
+scope  date  1670 to 4  2006-06-01  1125 of those had no recorded interval and were dropped for that rather than for being out of force; 541 rest on an amendment nobody has read, which is the temporal layer saying it does not know rather than saying no, and 0 of those were admitted
+```
+
+Of the 3563 validity intervals on this corpus, 3252 come from an amendment that was detected and never read, 311 come from a commencement date, and none come from the version graph.
+A component whose only interval is an unread amendment is neither in force nor out of it as far as this layer is concerned, so a strict date filter drops it, which is why four components survive above.
+`--assume-unread` admits those wordings and says in the same line that it is assuming an unread amendment left the wording alone, which is a guess wearing a label rather than a fact.
+It takes the same query from 4 components in scope to 335 and puts `vn:law:2001:29-2001-qh10:article-17` first, which is the right answer at that date.
+
+The answerer is handed the retrieved components, their titles, their spans and the trusted statements extracted from them, and it may write nothing else.
+Every sentence it produces carries a component identifier, a statement identifier and a quote, and a sentence whose component was not retrieved, whose statement does not exist, or whose quote is not in that component's span is dropped by name rather than repaired.
+
+```text
+1. Cơ quan thuế phải giải quyết khiếu nại về thuế trong thời hạn mười lăm ngày, kể từ ngày nhận được khiếu nại.
+   vn:law:1998:05-1998-qh10:article-22:clause-1
+   trích: Cơ quan thuế nhận được khiếu nại về thuế phải giải quyết trong thời hạn mười lăm ngày, kể từ ngày nhận được khiếu nại;
+2 of 2 sentences survived the check, 1 calls, 4729 tokens
+```
+
+Refusal is a first class answer and not a failure path.
+
+```text
+từ chối: Danh sách điều khoản không có quy định về mức lương tối thiểu vùng hiện nay nên không đủ cơ sở để trả lời.
+0 of 0 sentences survived the check, 1 calls, 1697 tokens
+```
+
+### The statute benchmark
+
+`eval/statute.json` is twenty six questions over the nine documents the trusted store holds statements for, and it is compiled into the binary so that a figure in a report cannot have come from a file somebody edited locally.
+Twenty two are answerable across seven families, deadline, bearer, definition, prohibition, right, sanction and temporal, and four are not answerable from this corpus at all, so a system that never refuses is caught rather than rewarded.
+Gold is a list of component identifiers and never an answer string, because what is being measured is whether the system reaches the provision a lawyer would cite, and comparing prose against prose measures the wording as much as the retrieval.
+One question is asked twice, the same Vietnamese sentence at 2003-01-01 and at 2006-06-01, with different gold at each date.
+
+Three scores are reported and there is nowhere to put a fourth that combines them.
+Construction asks whether the graph even holds what the question needs, retrieval asks whether the ranking found it, and generation asks what the model did with it, and those three fail for different reasons and are repaired by different code.
+
+```text
+construction over 22 answerable questions, 24 gold components
+  gold component carries a trusted statement  1.000 (24 of 24)
+  gold component exists                       1.000 (24 of 24)
+  note: 22 of 22 questions have every gold component built
+
+retrieval over top 8, 22 answerable questions
+  gold components retrieved                   0.833 (20 of 24)
+  gold components retrieved, of those built   0.833 (20 of 24)
+  questions with at least one gold component  0.818 (18 of 22)
+  questions with every gold component         0.818 (18 of 22)
+  note: mean reciprocal rank 0.677 over 22 questions
+  note: 168 distinct components put in play, 7.6 per question at k=8
+  note: no gold component at any rank for questions 10, 12, 21, 22
+
+generation over 22 answerable, 4 unanswerable questions
+  answerable questions with a grounded claim  0.818 (18 of 22)
+  answered questions citing a gold component  0.889 (16 of 18)
+  unanswerable questions refused              1.000 (4 of 4)
+  note: 27 claims made, 27 survived the grounding check, 22 cited a gold component
+  note: 0 claims cited a component or a statement that does not exist
+```
+
+Construction being perfect is what makes the other two readable.
+Every gold component exists and every one of them carries a trusted statement, so each of those four retrieval misses is retrieval's own failure and cannot be an extraction gap wearing a retrieval costume.
+Recall is still reported twice, over all gold and over built gold, because on the next corpus those two will differ and a single recall number would hide which layer to fix.
+
+Two of the eighteen answered questions cited a component that is not gold, and every claim in both was a real quote from a real provision that does not answer the question.
+That is the failure the citation rate exists to catch, it is invisible to a grounding check, and it is why both numbers are printed.
+
+The six failures split three ways and each way wants different work.
+
+Questions 10 and 12 are lexical misses.
+Both ask about a short clause using long ordinary Vietnamese, BM25 prefers the long provisions that share those ordinary words, the gold clause never enters the top eight, and the answerer then refuses because nothing it was handed supports an answer.
+The repair is an embedding route, not a weight nudged until the benchmark moves.
+
+Questions 14 and 15 retrieved their gold and were refused anyway, which was not expected and is the most interesting result in the run.
+Both ask what a party is prohibited from doing, both prohibitions are lists, and the trusted statements cover part of each list.
+The model said so in as many words, that the provisions it was given carry no verified statement about the rest of the list, and declined to answer rather than answer from the part it had.
+A partial answer to `what is a branch not allowed to do` is a wrong answer that reads as a complete one, so the refusal is the behaviour this design was asking for, and it also says that extraction recall inside a list is now the thing standing between this corpus and two more answers.
+
+Questions 21 and 22 are the temporal pair, and they fail on the same cause from opposite sides.
+Under a strict date filter only four components survive at either date, all of them clauses of the 1998 amending law, so the answerer confidently quoted a real provision about customs declarations that answers a different question.
+`--assume-unread` fixes 21, lifting gold recall from 0.833 to 0.875 and mean reciprocal rank from 0.677 to 0.722, and that is the reason the flag prints its assumption on every use.
+Question 22 stays broken with the flag on, because the version graph is empty: at 2006-06-01 the 2001 original and the 2005 clause amending it are both candidates, nothing recorded that the second replaced the first, and the original outranks the amendment on wording alone.
+That is a finding about the temporal layer rather than a number for the retriever to fix.
+
+### Two baselines
+
+The same twenty six questions were asked with flat chunk retrieval over the same text, and with no retrieval at all.
+
+```text
+                              graph      flat       none
+gold components retrieved     0.833      0.958      0.000
+mean reciprocal rank          0.677      0.242      0.000
+components put in play         7.6       53.1        0.0
+grounded answers              0.818      0.091      0.000
+claims made, claims kept      27, 27      6, 2       0, 0
+unanswerable refused          4 of 4     4 of 4     4 of 4
+```
+
+Flat retrieval finds more gold than the graph does and that number is real, but it is not the same measurement.
+Eight flat chunks straddle 53 components on average against the graph's 7.6, so the baseline is being handed seven times as many chances at the same k, which is what the components put in play row is there to say.
+Its mean reciprocal rank is 0.242 against 0.677, which is the same fact stated from the other side: it covers the answer without locating it.
+
+The generation column is the part that was not expected.
+Flat retrieval produced a grounded answer on 2 of 22 questions because a chunk is a window rather than a provision, the trusted statements hang off components and not off windows, and an answerer that may only assert what a statement supports has nothing to assert and refuses.
+That is not the baseline being handled unfairly, it is the shape of the claim constraint: the graph is what makes grounded generation possible at all, and without it the honest behaviour is silence.
+With no retrieval the model made zero claims across all twenty six questions rather than answering from what it happens to know about Vietnamese law, which is the constraint working in the case where it would have been easiest to break.
+
+Each of the three runs is 26 model calls.
+Graph spent 146,840 tokens, flat 146,922, and no retrieval 9,279.
+Cost reports as unavailable on all three, because the route these ran through is a subscription with no rate card rather than a metered endpoint.
+
+Construction and retrieval need no model at all, so `luatdo statute` without `--generate` reproduces both of those tables on a laptop with no endpoint configured.
 
 ## Two other formats
 

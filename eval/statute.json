@@ -1,0 +1,222 @@
+{
+  "version": 1,
+  "corpus": "the nine instruments the trusted store holds statements for, which is what the tax-2025 and labour-2025 campaigns reached",
+  "questions": [
+    {
+      "n": 1,
+      "question": "Cơ quan thuế phải giải quyết khiếu nại về thuế trong thời hạn bao lâu kể từ ngày nhận được khiếu nại?",
+      "family": "deadline",
+      "kind": "answerable",
+      "gold": ["vn:law:1998:05-1998-qh10:article-22:clause-1"],
+      "note": "mười lăm ngày, kéo dài không quá ba mươi ngày với vụ việc phức tạp"
+    },
+    {
+      "n": 2,
+      "question": "Doanh nghiệp dịch vụ phải gửi hồ sơ đổi Giấy phép trong thời hạn bao lâu kể từ ngày được cấp lại Giấy chứng nhận đăng ký kinh doanh?",
+      "family": "deadline",
+      "kind": "answerable",
+      "gold": ["vn:law:2006:72-2006-qh11:article-11:clause-3"],
+      "note": "ba mươi ngày"
+    },
+    {
+      "n": 3,
+      "question": "Bộ trưởng Bộ Lao động - Thương binh và Xã hội xem xét cấp Giấy phép trong thời hạn bao nhiêu ngày kể từ ngày nhận đủ hồ sơ hợp lệ?",
+      "family": "deadline",
+      "kind": "answerable",
+      "gold": ["vn:law:2006:72-2006-qh11:article-10:clause-2"],
+      "note": "ba mươi ngày"
+    },
+    {
+      "n": 4,
+      "question": "Người khai hải quan phải nộp tờ khai hải quan đối với hàng hóa xuất khẩu chậm nhất là bao lâu trước khi phương tiện vận tải xuất cảnh?",
+      "family": "deadline",
+      "kind": "answerable",
+      "gold": ["vn:law:2001:29-2001-qh10:article-18:clause-2"],
+      "note": "08 giờ"
+    },
+    {
+      "n": 5,
+      "question": "Cơ sở sản xuất hàng hóa chịu thuế tiêu thụ đặc biệt phải nộp tờ khai thuế chậm nhất vào ngày nào của tháng tiếp theo?",
+      "family": "deadline",
+      "kind": "answerable",
+      "gold": ["vn:law:1998:05-1998-qh10:article-10:clause-1"],
+      "note": "chậm nhất không quá mười ngày đầu của tháng tiếp theo"
+    },
+    {
+      "n": 6,
+      "question": "Doanh nghiệp dịch vụ phải thông báo cho Bộ Lao động - Thương binh và Xã hội trong thời hạn bao lâu kể từ ngày giao nhiệm vụ cho chi nhánh?",
+      "family": "deadline",
+      "kind": "answerable",
+      "gold": ["vn:law:2006:72-2006-qh11:article-16:clause-4"],
+      "note": "mười lăm ngày"
+    },
+    {
+      "n": 7,
+      "question": "Ai phải nộp lệ phí khi được cấp Giấy phép hoạt động dịch vụ đưa người lao động đi làm việc ở nước ngoài?",
+      "family": "bearer",
+      "kind": "answerable",
+      "gold": ["vn:law:2006:72-2006-qh11:article-10:clause-4"],
+      "note": "doanh nghiệp được cấp Giấy phép"
+    },
+    {
+      "n": 8,
+      "question": "Khi làm thủ tục hải quan, công chức hải quan phải làm những việc gì?",
+      "family": "bearer",
+      "kind": "answerable",
+      "gold": ["vn:law:2001:29-2001-qh10:article-16:clause-2"],
+      "note": "tiếp nhận và đăng ký hồ sơ, kiểm tra, thu thuế, quyết định thông quan"
+    },
+    {
+      "n": 9,
+      "question": "Cơ quan nào giám sát việc thi hành pháp luật hải quan?",
+      "family": "bearer",
+      "kind": "answerable",
+      "gold": [
+        "vn:law:2001:29-2001-qh10:article-10:clause-1",
+        "vn:law:2001:29-2001-qh10:article-10:clause-2"
+      ],
+      "note": "Hội đồng nhân dân các cấp, và Mặt trận Tổ quốc cùng các tổ chức thành viên"
+    },
+    {
+      "n": 10,
+      "question": "Ai quyết định thu hồi Giấy phép của doanh nghiệp dịch vụ đưa người lao động đi làm việc ở nước ngoài?",
+      "family": "bearer",
+      "kind": "answerable",
+      "gold": ["vn:law:2006:72-2006-qh11:article-15:clause-3"],
+      "note": "Bộ trưởng Bộ Lao động - Thương binh và Xã hội"
+    },
+    {
+      "n": 11,
+      "question": "Công chức hải quan là ai?",
+      "family": "definition",
+      "kind": "answerable",
+      "gold": ["vn:law:2001:29-2001-qh10:article-14:clause-1"],
+      "note": "người được tuyển dụng, đào tạo và sử dụng theo pháp luật về cán bộ, công chức"
+    },
+    {
+      "n": 12,
+      "question": "Hồ sơ cấp Giấy phép hoạt động dịch vụ đưa người lao động đi làm việc ở nước ngoài gồm những gì?",
+      "family": "definition",
+      "kind": "answerable",
+      "gold": ["vn:law:2006:72-2006-qh11:article-10:clause-1"],
+      "note": "danh sách hồ sơ, mở đầu bằng văn bản đề nghị cấp Giấy phép"
+    },
+    {
+      "n": 13,
+      "question": "Chứng chỉ sơ cấp nghề do ai cấp cho người học nghề?",
+      "family": "definition",
+      "kind": "answerable",
+      "gold": ["vn:law:2006:76-2006-qh11:article-16"],
+      "note": "người đứng đầu cơ sở dạy nghề quy định tại Điều 15"
+    },
+    {
+      "n": 14,
+      "question": "Trong thời gian bị đình chỉ hoạt động, doanh nghiệp dịch vụ không được làm gì?",
+      "family": "prohibition",
+      "kind": "answerable",
+      "gold": ["vn:law:2006:72-2006-qh11:article-14:clause-2"],
+      "note": "không được ký kết, đăng ký hợp đồng cung ứng lao động và không được tuyển chọn lao động"
+    },
+    {
+      "n": 15,
+      "question": "Chi nhánh của doanh nghiệp dịch vụ không được thực hiện những hoạt động nào?",
+      "family": "prohibition",
+      "kind": "answerable",
+      "gold": ["vn:law:2006:72-2006-qh11:article-16:clause-3"],
+      "note": "ký kết hợp đồng cung ứng lao động và các hoạt động liệt kê tại khoản 3"
+    },
+    {
+      "n": 16,
+      "question": "Doanh nghiệp dịch vụ có được thu phí tuyển chọn của người lao động không?",
+      "family": "prohibition",
+      "kind": "answerable",
+      "gold": ["vn:law:2006:72-2006-qh11:article-27:clause-2"],
+      "note": "không được thu phí tuyển chọn"
+    },
+    {
+      "n": 17,
+      "question": "Doanh nghiệp dịch vụ bị thu hồi Giấy phép thì sau bao lâu được xem xét cấp Giấy phép mới?",
+      "family": "right",
+      "kind": "answerable",
+      "gold": [
+        "vn:law:2006:72-2006-qh11:article-15:clause-4",
+        "vn:law:2006:72-2006-qh11:article-15:clause-5"
+      ],
+      "note": "hai năm hoặc năm năm tùy trường hợp thu hồi, nên một câu trả lời chỉ nêu một mốc là chưa đủ"
+    },
+    {
+      "n": 18,
+      "question": "Người khai hải quan có được sửa chữa tờ khai hải quan đã đăng ký không?",
+      "family": "right",
+      "kind": "answerable",
+      "gold": ["vn:law:2001:29-2001-qh10:article-22:clause-2"],
+      "note": "được bổ sung, sửa chữa, thay thế đến trước thời điểm kiểm tra thực tế"
+    },
+    {
+      "n": 19,
+      "question": "Nếu đối tượng nộp thuế chưa nộp đủ tiền thuế, tiền phạt thì cơ quan hải quan xử lý chuyến hàng tiếp theo thế nào?",
+      "family": "sanction",
+      "kind": "answerable",
+      "gold": ["vn:law:1998:04-1998-qh10:article-1:clause-5"],
+      "note": "không làm thủ tục cho chuyến hàng tiếp theo cho đến khi nộp đủ"
+    },
+    {
+      "n": 20,
+      "question": "Người học nghề trình độ sơ cấp học hết chương trình thì được gì?",
+      "family": "right",
+      "kind": "answerable",
+      "gold": ["vn:law:2006:76-2006-qh11:article-16"],
+      "note": "được dự kiểm tra và được cấp chứng chỉ sơ cấp nghề nếu đạt yêu cầu"
+    },
+    {
+      "n": 21,
+      "question": "Địa điểm làm thủ tục hải quan là ở đâu?",
+      "family": "temporal",
+      "kind": "answerable",
+      "as_of": "2003-01-01",
+      "gold": ["vn:law:2001:29-2001-qh10:article-17"],
+      "note": "trụ sở Hải quan cửa khẩu và ngoài cửa khẩu, bản gốc năm 2001"
+    },
+    {
+      "n": 22,
+      "question": "Địa điểm làm thủ tục hải quan là ở đâu?",
+      "family": "temporal",
+      "kind": "answerable",
+      "as_of": "2006-06-01",
+      "gold": ["vn:law:2005:42-2005-qh11:article-1:clause-10"],
+      "note": "bản sửa đổi năm 2005 nói trụ sở Chi cục Hải quan, và đây là cùng một câu hỏi với câu 21 ở một ngày khác"
+    },
+    {
+      "n": 23,
+      "question": "Mức lương tối thiểu vùng áp dụng cho người lao động là bao nhiêu?",
+      "family": "absent",
+      "kind": "unanswerable",
+      "gold": [],
+      "note": "không có văn bản nào trong phạm vi này nói về lương tối thiểu"
+    },
+    {
+      "n": 24,
+      "question": "Người sử dụng lao động phải đóng bảo hiểm xã hội bắt buộc cho người lao động theo tỷ lệ nào?",
+      "family": "absent",
+      "kind": "unanswerable",
+      "gold": [],
+      "note": "luật bảo hiểm xã hội không nằm trong phạm vi này"
+    },
+    {
+      "n": 25,
+      "question": "Thuế suất thuế giá trị gia tăng đối với dịch vụ vận tải quốc tế là bao nhiêu?",
+      "family": "absent",
+      "kind": "unanswerable",
+      "gold": [],
+      "note": "phạm vi có thuế tiêu thụ đặc biệt và thuế thu nhập doanh nghiệp, không có thuế giá trị gia tăng"
+    },
+    {
+      "n": 26,
+      "question": "Thủ tục cấp giấy phép xây dựng gồm những bước nào?",
+      "family": "absent",
+      "kind": "unanswerable",
+      "gold": [],
+      "note": "luật xây dựng không nằm trong phạm vi này, và câu hỏi này dùng những từ mà bộ luật khác trong kho có, nên nó dễ bị trả lời nhầm"
+    }
+  ]
+}
