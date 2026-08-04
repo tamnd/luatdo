@@ -248,12 +248,10 @@ func Train(examples []Example, epochs int) *Tagger {
 		t.Kinds[key] = topKind(counts)
 	}
 
-	// Averaged perceptron. The average is what makes it stable: the last weight
-	// vector of a perceptron is whatever the last few examples happened to
-	// push it to, and averaging over every update is the standard fix.
-	sum := map[string]float64{}
-	step := 1.0
-	for range epochs {
+	// The learning is in linear.go. What is here is the order the candidates
+	// arrive in, which is the part that belongs to this task: every phrase of
+	// every example, examples sorted, and the same walk on every machine.
+	t.Weights = Fit(epochs, func(yield func([]string, bool) bool) {
 		for _, e := range sorted {
 			positive := map[[2]int]bool{}
 			for _, s := range e.Spans {
@@ -263,44 +261,15 @@ func Train(examples []Example, epochs int) *Tagger {
 				for i := range group {
 					for n := 1; n <= MaxSpanTokens && i+n <= len(group); n++ {
 						f := features(e.Text, group, i, n, gaz)
-						want := 0.0
-						if positive[[2]int{group[i].start, group[i+n-1].end}] {
-							want = 1.0
+						if !yield(f, positive[[2]int{group[i].start, group[i+n-1].end}]) {
+							return
 						}
-						got := 0.0
-						if score(t.Weights, f) > 0 {
-							got = 1.0
-						}
-						if got == want {
-							step++
-							continue
-						}
-						delta := want - got
-						for _, key := range f {
-							t.Weights[key] += delta
-							sum[key] += delta * step
-						}
-						step++
 					}
 				}
 			}
 		}
-	}
-	for key := range t.Weights {
-		t.Weights[key] -= sum[key] / step
-		if t.Weights[key] == 0 {
-			delete(t.Weights, key)
-		}
-	}
+	})
 	return t
-}
-
-func score(w map[string]float64, features []string) float64 {
-	var s float64
-	for _, f := range features {
-		s += w[f]
-	}
-	return s
 }
 
 // Tag runs the student over one provision. Overlapping accepted spans are
@@ -317,7 +286,7 @@ func (t *Tagger) Tag(text string) []Span {
 		for i := range group {
 			for n := 1; n <= MaxSpanTokens && i+n <= len(group); n++ {
 				f := features(text, group, i, n, t.gaz)
-				s := score(t.Weights, f)
+				s := Dot(t.Weights, f)
 				if s <= 0 {
 					continue
 				}

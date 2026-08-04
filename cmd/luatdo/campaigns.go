@@ -90,6 +90,26 @@ func cmdCampaign(args []string) error {
 	if err != nil {
 		return err
 	}
+	// The omission audit is deterministic and free, so it runs on every report
+	// rather than on request. A campaign report that says what was found and
+	// nothing about what was missed is the report this project spent four
+	// milestones printing.
+	audit, err := auditOmission(s, sc.Name)
+	if err != nil {
+		return err
+	}
+	report.Audit(audit)
+	if audit.Missed > 0 {
+		report.Note("uncovered-modality-sentences", fmt.Sprintf(
+			"%d sentences in the provisions this pass read state a duty, a prohibition or a right in one of five surface forms and produced no statement at all, and they are listed in the report file",
+			audit.Missed))
+	}
+	if audit.Dropped > 0 {
+		report.Note("sentences-covered-only-by-rejections", fmt.Sprintf(
+			"%d sentences carrying one of those forms are covered only by statements verification threw away, so the graph is silent about them and the pass is not",
+			audit.Dropped))
+	}
+
 	// The judge's own state is a defect of the campaign, not of the eval store.
 	// Every precision figure above it came from that instrument, so a report
 	// that leaves it in another file is a report that reads better than the work

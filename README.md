@@ -131,6 +131,8 @@ RETURN path
 | `luatdo extract` | Schema-constrained LLM extraction of entity mentions under the closed registry |
 | `luatdo link` | Resolve mentions against the registry and the defined term table, with scores |
 | `luatdo norms` | Extract norm statements and verify them with the entailment judge |
+| `luatdo verify` | Run a verification stage on its own, and train and measure the cheap entailment gate |
+| `luatdo omission` | Audit what the pass never said anything about, by surface form and by re-extraction |
 | `luatdo ask` | Answer the norm competency questions over the trusted store |
 | `luatdo conflicts` | Put trusted statements in a comparable form and find the pairs that cannot both be obeyed |
 | `luatdo temporal` | Read amending instructions, build the version graph, and answer questions at a date |
@@ -741,6 +743,85 @@ agreement     raw 0.880 (44 of 50), kappa -0.034 (worse than chance)
 `judge rejudge` runs today's judge over the same sampled statements and writes its verdicts beside the original key rather than over it.
 The labels stay where they are, `judge score` prints both keys under them, and it prints how many items moved and in which direction.
 A prompt shown only by its own new number is indistinguishable from a prompt that was tuned until the number came out.
+
+### A cheap gate in front of the judge
+
+Every proposed statement costs a judge call, the judge is the most expensive call in the pipeline, and most of what it reads it accepts.
+The obvious saving is a cheap local model that settles the easy cases and passes the rest on, trained on the verdicts the judge has already given.
+That is distillation in the ordinary sense: the model manufactures the supervision and a small model does the inference, and there is a decade of results saying it works.
+
+```sh
+luatdo verify --stage entail train    # cross validate, calibrate the bands, write the gate
+luatdo verify --stage entail report   # what the stored gate would do to what is on disk
+luatdo verify --stage entail show     # the bands, the fingerprint, and the heaviest features
+```
+
+The student is an averaged perceptron over hashed features of the pair, so a run on Linux, macOS and Windows produces the same weights, and every weight is a phrase somebody can read.
+The teacher is 1,173 judge-labelled statements over 619 provisions, 1,010 entailed and 163 not.
+Training is five folds grouped by provision, with a sixth held aside inside each fold for calibration, because two statements from one clause share their evidence and a split that puts one in training and one in test measures memory.
+The bands are calibrated and never chosen: the accept edge is the widest one whose error rate on held out data stays under the budget, the reject edge likewise, and a band that no fold could place is switched off rather than guessed at.
+
+At the sign threshold the gate agrees with the judge on 84.4 percent of the pairs, at precision 87.8 and recall 95.0.
+That is the part that sounds like a result. The part that matters is what the bands do when they have to be right:
+
+```text
+budget   calls saved   true statements deleted   false ones waved through
+1%       5.1%          1.2%                      4.9%
+2%       6.1%          1.9%                      4.9%
+5%       18.5%         7.5%                      7.4%
+10%      30.7%         12.4%                     10.4%
+```
+
+Under 10 percent the accept band does not survive cross validation at all: at least one fold could not place an edge inside the budget, so the shipped gate has no accept band and its only decision is rejection.
+A gate that can only reject is a gate whose entire saving comes from deleting statements without a judge ever reading them, which is the one direction where being wrong is silent.
+Against the 50 human labels it agrees 82.0 percent of the time, and that number is an upper bound rather than a result, because those 50 are in its training set.
+
+So the gate ships off. `--gate` turns it on, prints what it is calibrated to and says on the run that a rejection deletes a statement nobody read, and ten percent of its own decisions go to the judge anyway so its error rate is measured on the corpus rather than assumed from the folds.
+
+```sh
+luatdo run --campaign tax-2025 --limit 20 --gate
+```
+
+On the first live run with it switched on, over 20 provisions and 143 proposed statements, it settled nothing.
+Every score fell between the two edges, the judge was called 143 times exactly as it would have been without a gate, and those calls were 255,336 of the run's 456,542 tokens.
+That last number is the one this project did not have before, and it is the reason the milestone was worth running even though the gate is not: judging is 56 percent of what a pass spends.
+
+The heaviest features say why the whole thing is weaker than it looks.
+
+```text
++9.183 claim_cover=all
+-8.896 confidence=medium
++8.687 confidence=high
++8.581 type+claim_cover=definition/all
+```
+
+`claim_cover` is how much of the statement's vocabulary appears in the quote it cites, and `confidence` is what the extractor said about its own output.
+A gate built on those two is a lexical overlap detector with a self-report bolted to it, and it is not reading the provision.
+The eight stage design has a place for exactly this and the place is stage 5, cheapest first, with the strong judge behind it, so a stage 5 that abstains costs nothing but the time it took to find out.
+
+### What the pass never read
+
+Every number above is about statements that exist. A pass that reads a clause and says nothing about it produces no statement, no rejection, and no line in any report.
+
+```sh
+luatdo omission markers --campaign tax-2025    # free, over everything already extracted
+luatdo omission recovery --campaign tax-2025   # costs model calls, re-extracts a sample
+```
+
+The marker audit splits every extracted provision into sentences and looks for the five surface forms Vietnamese drafters use to state an obligation, a prohibition or a right: phải, nghiêm cấm, không được, có trách nhiệm, có quyền.
+A sentence carrying one of them is covered if any trusted statement quotes it, dropped if the only statements quoting it were thrown away, and missed if nothing was ever extracted from it at all.
+
+```text
+omission       378 provisions, 977 sentences, 201 carrying a modality marker
+               143 covered by a trusted statement, 50 covered only by a statement verification threw away, 8 nothing was ever extracted from
+```
+
+The audit runs on every campaign report and the sentences themselves are written to the report file, because a rate is something to feel bad about and a list is something to work through.
+It is a floor and not a measurement of recall: a sentence that states a rule without one of those five words is invisible to it, and plenty do.
+
+`omission recovery` is the other half. It re-extracts provisions in slow mode, which draws several independent candidates and unions them, and compares what that finds against what the single fast pass already had on disk.
+The fast side is read from the artifacts rather than re-run, because re-running it would compare two draws of one distribution instead of comparing the graph the project actually built.
+The report prints the claims only slow mode found beside the claims the fast pass had and slow mode did not keep, because slow mode judges its union again and can lose things, and a recovery rate quoted without that column reads as a free improvement.
 
 `eval gates` is the same code the export path runs, so a campaign that fails it cannot ship by accident.
 `--force` exports the Neo4j dump anyway and says in as many words that the graph is not one to publish numbers from.

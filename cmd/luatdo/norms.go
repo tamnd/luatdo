@@ -114,6 +114,7 @@ func cmdNorms(args []string) error {
 	mode := fs.String("mode", "fast", "fast or slow")
 	population := fs.Int("population", 3, "independent candidates in slow mode")
 	corrections := fs.Int("max-corrections", 2, "bounded retries on invalid model output")
+	useGate := fs.Bool("gate", false, "triage with the distilled entailment gate before calling the judge")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -149,10 +150,14 @@ func cmdNorms(args []string) error {
 	if err != nil {
 		return err
 	}
+	gate, err := gateIfAsked(s, *useGate)
+	if err != nil {
+		return err
+	}
 	runner := &campaign.Runner{
 		Store: s, Registry: reg, Completer: eng.completer, Pricing: eng.pricing,
 		Model: eng.model, Mode: *mode, Population: *population,
-		MaxCorrections: *corrections, Workers: 1,
+		MaxCorrections: *corrections, Gate: gate, Workers: 1,
 		Report: func(res campaign.Result) { fmt.Println(res) },
 	}
 	summary, err := runner.Run(context.Background(), tasks)

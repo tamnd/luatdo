@@ -216,6 +216,26 @@ func Slug(s string) string {
 	return strings.Trim(slugCleanup.ReplaceAllString(folded, "-"), "-")
 }
 
+// HasPhrase reports whether a phrase occurs in a text as whole words, with
+// diacritics, casing and punctuation folded away on both sides.
+//
+// The whole word part is what makes it usable on folded text. Vietnamese words
+// are short and folding makes them shorter, so a plain substring search for
+// "cấm" finds one inside "camera" and a search for "quy" finds one in most of
+// the corpus. Matching between the separators the slug already inserted costs
+// one allocation and rules that out.
+//
+// It does not rule out the other collision, which folding creates and nothing
+// here can undo: "phải" and "phái" are both "phai" afterwards. A caller that
+// needs those apart has to work on the original text.
+func HasPhrase(text, phrase string) bool {
+	p := Slug(phrase)
+	if p == "" {
+		return false
+	}
+	return strings.Contains("-"+Slug(text)+"-", "-"+p+"-")
+}
+
 var dmy = regexp.MustCompile(`^(\d{2})/(\d{2})/(\d{4})$`)
 var iso = regexp.MustCompile(`^(\d{4})-(\d{2})-(\d{2})$`)
 

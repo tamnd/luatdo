@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/tamnd/luatdo/entail"
 	"github.com/tamnd/luatdo/norm"
 	"github.com/tamnd/luatdo/ontology"
 )
@@ -158,5 +159,103 @@ func TestUnion(t *testing.T) {
 	}
 	if got[0].Confidence != 0.9 {
 		t.Errorf("confidence = %v, the stronger duplicate wins", got[0].Confidence)
+	}
+}
+
+// Stage 5 wiring. The gate decides, the judge is not called, and the record
+// says which of the two settled it.
+func TestNormRunnerGateAcceptsWithoutAJudge(t *testing.T) {
+	c := &scripted{responses: []string{
+		`{"statements":[` + statementJSON("người lao động", "làm việc", 0.9) + `]}`,
+	}}
+	g := &entail.Gate{Weights: map[string]float64{"bias": 5}, Accept: 1, Accepts: true}
+	r := &NormRunner{Completer: c, Model: "m", Registry: ontology.Seed(), Gate: g}
+	job, err := r.Run(context.Background(), testDoc(), clauseID)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	rec := job.Records[0]
+	if rec.Status != norm.StatusVerified {
+		t.Errorf("status = %q", rec.Status)
+	}
+	if rec.Entailment != nil {
+		t.Error("the judge was called on a statement the gate had already decided")
+	}
+	if rec.Gate == nil || rec.Gate.Decision != norm.GateAccept {
+		t.Errorf("gate verdict = %+v", rec.Gate)
+	}
+	if job.Verification.Calls != 0 || job.Verification.Accepted != 1 {
+		t.Errorf("verification = %+v", job.Verification)
+	}
+	if len(c.inputs) != 1 {
+		t.Errorf("%d model calls, want the extraction alone", len(c.inputs))
+	}
+}
+
+func TestNormRunnerGateRejectsWithoutAJudge(t *testing.T) {
+	c := &scripted{responses: []string{
+		`{"statements":[` + statementJSON("người lao động", "làm việc", 0.9) + `]}`,
+	}}
+	g := &entail.Gate{Weights: map[string]float64{"bias": -5}, Reject: -1, Rejects: true}
+	r := &NormRunner{Completer: c, Model: "m", Registry: ontology.Seed(), Gate: g}
+	job, err := r.Run(context.Background(), testDoc(), clauseID)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	rec := job.Records[0]
+	if rec.Status != norm.StatusRejected || rec.Gate.Decision != norm.GateReject {
+		t.Errorf("record = %+v", rec)
+	}
+	if job.Verification.Rejected != 1 || job.Verification.Calls != 0 {
+		t.Errorf("verification = %+v", job.Verification)
+	}
+}
+
+// A gate with no bands changes nothing except that its reading is recorded,
+// which is what makes the audit of its errors possible at all.
+func TestNormRunnerGateWithoutBandsStillJudges(t *testing.T) {
+	c := &scripted{responses: []string{
+		`{"statements":[` + statementJSON("người lao động", "làm việc", 0.9) + `]}`,
+		verdictJSON(norm.VerdictEntailed),
+	}}
+	g := &entail.Gate{Weights: map[string]float64{"bias": 5}}
+	r := &NormRunner{Completer: c, Model: "m", Registry: ontology.Seed(), Gate: g}
+	job, err := r.Run(context.Background(), testDoc(), clauseID)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	rec := job.Records[0]
+	if rec.Entailment == nil || rec.Gate == nil || rec.Gate.Decision != norm.GateJudge {
+		t.Errorf("record = %+v", rec)
+	}
+	if job.Verification.Escalated != 1 || job.Verification.Calls != 1 {
+		t.Errorf("verification = %+v", job.Verification)
+	}
+	if job.Verification.Usage.TotalTokens != 15 {
+		t.Errorf("verification usage = %+v, want the judge call alone", job.Verification.Usage)
+	}
+}
+
+// The audit sample is the reason a decided statement can still cost a call.
+func TestNormRunnerAuditSendsDecidedStatementsToTheJudge(t *testing.T) {
+	c := &scripted{responses: []string{
+		`{"statements":[` + statementJSON("người lao động", "làm việc", 0.9) + `]}`,
+		verdictJSON(norm.VerdictContradicted),
+	}}
+	g := &entail.Gate{Weights: map[string]float64{"bias": 5}, Accept: 1, Accepts: true, Audit: 100}
+	r := &NormRunner{Completer: c, Model: "m", Registry: ontology.Seed(), Gate: g}
+	job, err := r.Run(context.Background(), testDoc(), clauseID)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	rec := job.Records[0]
+	if !rec.Gate.Audited || rec.Entailment == nil {
+		t.Fatalf("record = %+v", rec)
+	}
+	if rec.Status != norm.StatusRejected {
+		t.Errorf("status = %q, the judge overrules the gate on an audited statement", rec.Status)
+	}
+	if job.Verification.Audited != 1 || job.Verification.Calls != 1 {
+		t.Errorf("verification = %+v", job.Verification)
 	}
 }

@@ -204,3 +204,22 @@ func TestISODateOrdersTheWayTheCorpusDoesNot(t *testing.T) {
 			early, ISODate(early), late, ISODate(late))
 	}
 }
+
+func TestHasPhraseMatchesWholeWords(t *testing.T) {
+	cases := []struct {
+		text, phrase string
+		want         bool
+	}{
+		{"Nghiêm cấm mọi hành vi phân biệt đối xử", "nghiêm cấm", true},
+		{"NGHIÊM CẤM hành vi này", "nghiêm cấm", true},
+		{"Lắp đặt camera giám sát", "cấm", false},
+		{"Người lao động có quyền đơn phương chấm dứt", "có quyền", true},
+		{"Người lao động có các quyền sau đây", "có quyền", false},
+		{"bất kỳ điều gì", "", false},
+	}
+	for _, c := range cases {
+		if got := HasPhrase(c.text, c.phrase); got != c.want {
+			t.Errorf("HasPhrase(%q, %q) = %v", c.text, c.phrase, got)
+		}
+	}
+}

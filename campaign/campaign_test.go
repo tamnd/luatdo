@@ -12,6 +12,7 @@ import (
 
 	"github.com/tamnd/luatdo/api"
 	"github.com/tamnd/luatdo/coverage"
+	"github.com/tamnd/luatdo/entail"
 	"github.com/tamnd/luatdo/law"
 	"github.com/tamnd/luatdo/norm"
 	"github.com/tamnd/luatdo/ontology"
@@ -292,5 +293,64 @@ func TestRunOnAnEmptyQueue(t *testing.T) {
 	}
 	if summary.Queued != 0 || summary.Done != 0 {
 		t.Errorf("summary = %+v", summary)
+	}
+}
+
+// The gate is the only thing in the pipeline that can remove a model call, so
+// the test that matters is the count of calls, not the count of statements.
+func TestTheGateRemovesJudgeCallsAndTheSummarySaysWhatItRemoved(t *testing.T) {
+	s, tasks := fixture(t, 4)
+	c := &scripted{}
+	r := runner(s, c, 2)
+	r.Gate = &entail.Gate{Weights: map[string]float64{"bias": 5}, Accept: 1, Accepts: true, Budget: 0.05}
+	var mu sync.Mutex
+	var lines []string
+	r.Report = func(res Result) {
+		mu.Lock()
+		defer mu.Unlock()
+		lines = append(lines, res.String())
+	}
+
+	summary, err := r.Run(context.Background(), tasks)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if summary.Done != 4 || summary.Statements != 4 || summary.Entailed != 4 {
+		t.Fatalf("summary = %+v", summary)
+	}
+	if c.count() != 4 {
+		t.Errorf("%d model calls, want one extraction each and no judge at all", c.count())
+	}
+	v := summary.Verified
+	if v.Accepted != 4 || v.Calls != 0 || v.Rejected != 0 || v.Audited != 0 || v.Escalated != 0 {
+		t.Errorf("verification = %+v", v)
+	}
+	if v.Share() != 1 {
+		t.Errorf("share = %v, want every statement settled without a judge", v.Share())
+	}
+	if v.Usage.TotalTokens != 0 {
+		t.Errorf("the judge spent %d tokens without being called", v.Usage.TotalTokens)
+	}
+	if !strings.Contains(lines[0], "gate=1/1 judged=0") {
+		t.Errorf("reporting line = %q", lines[0])
+	}
+	if !strings.Contains(summary.String(), "4 statements settled without a judge of 4, 100.0% of calls saved") {
+		t.Errorf("summary = %q", summary.String())
+	}
+}
+
+// A campaign that ran no gate has to read as a campaign that ran no gate, not
+// as one whose gate settled nothing.
+func TestACampaignWithoutAGateSaysNothingAboutOne(t *testing.T) {
+	s, tasks := fixture(t, 1)
+	r := runner(s, &scripted{}, 1)
+	var line string
+	r.Report = func(res Result) { line = res.String() }
+	summary, err := r.Run(context.Background(), tasks)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if strings.Contains(line, "gate") || strings.Contains(summary.String(), "gate") {
+		t.Errorf("a gateless run mentions a gate:\n%s\n%s", line, summary)
 	}
 }
