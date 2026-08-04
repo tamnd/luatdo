@@ -7,6 +7,7 @@ import (
 
 	"github.com/tamnd/luatdo/extract"
 	"github.com/tamnd/luatdo/norm"
+	"github.com/tamnd/luatdo/omission"
 	"github.com/tamnd/luatdo/route"
 )
 
@@ -58,7 +59,69 @@ type Report struct {
 	Tokens int    `json:"tokens"`
 	Cost   string `json:"cost"`
 
+	// Omission is what the pass never said anything about, layer by layer. It is
+	// filled in by the caller, because the audit needs the provision text and
+	// this report is compiled from records.
+	Omission Omission `json:"omission"`
+
 	Defects []Defect `json:"defects"`
+}
+
+// Omission is the campaign's own account of what is not in the graph.
+//
+// The layers are the ones a miss can happen at, and they are separate because
+// the fix is different at each. A document nobody reached needs a run. A
+// provision with no job needs a run over that provision. A sentence with a
+// duty marker and no statement needs somebody to read the sentence. A statement
+// verification threw away needs somebody to read the verdict.
+//
+// It is a section of the campaign report rather than a separate command's
+// output for the reason the defect list is: a number that lives somewhere else
+// is a number nobody puts next to the counts it qualifies.
+type Omission struct {
+	Documents  int             `json:"documents"`  // in scope, never reached
+	Provisions int             `json:"provisions"` // extractable, no job
+	Audit      omission.Report `json:"audit"`
+	// Audited says whether the surface form check ran at all. Without it the
+	// zeroes below are indistinguishable from a clean audit, and a clean audit
+	// of this corpus would be the least likely result in the project.
+	Audited bool `json:"audited"`
+}
+
+// Audit fills in the omission section from an audit the caller ran, and derives
+// the two layers this report can see on its own.
+func (r *Report) Audit(a omission.Report) {
+	r.Omission = Omission{
+		Documents:  r.Documents - r.Reached,
+		Provisions: r.Extractable - r.Extracted,
+		Audit:      a,
+		Audited:    true,
+	}
+}
+
+// String renders the omission section, layer by layer, worst first.
+//
+// The listed sentences are not printed here. There can be hundreds of them, the
+// whole list is in the report file, and a section that scrolls a terminal for a
+// minute is one people learn to page past. The counts are here and they say
+// where to look.
+func (o Omission) String() string {
+	var b strings.Builder
+	if !o.Audited {
+		fmt.Fprintf(&b, "omission       not audited, so nothing here says what the pass never read\n")
+		return b.String()
+	}
+	a := o.Audit
+	fmt.Fprintf(&b, "omission       %d documents in scope untouched, %d extractable provisions with no job\n",
+		o.Documents, o.Provisions)
+	fmt.Fprintf(&b, "               %d of %d sentences in the provisions that were read carry a modality marker\n",
+		a.WithMarker, a.Sentences)
+	fmt.Fprintf(&b, "               %d of those are covered, %d are covered only by a statement verification threw away, %d produced nothing at all\n",
+		a.Covered, a.Dropped, a.Missed)
+	fmt.Fprintf(&b, "               the %d sentences worth reading are listed in this campaign's report file\n",
+		len(a.Findings))
+	fmt.Fprintf(&b, "               a sentence stating a rule without one of those five words is invisible to this check, and plenty do\n")
+	return b.String()
 }
 
 // Defect is one thing known to be wrong with this campaign's output.
@@ -273,6 +336,7 @@ func (r Report) String() string {
 		r.Unsanctioned, r.Unbearing, r.Dangling)
 	fmt.Fprintf(&b, "model          %d calls in scope, over %d runs against this store spending %d tokens, cost %s\n",
 		r.Calls, r.Runs, r.Tokens, r.Cost)
+	b.WriteString(r.Omission.String())
 	if len(r.Defects) == 0 {
 		fmt.Fprintf(&b, "known defects  none of the checks in this report found one, which is not the same as none\n")
 		return b.String()

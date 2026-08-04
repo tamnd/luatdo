@@ -466,19 +466,45 @@ type Judgment struct {
 	Rationale string `json:"rationale,omitempty"`
 }
 
+// GateVerdict is what the cheap entailment gate made of a statement before any
+// judge saw it.
+//
+// It is stored whether or not it decided anything. A gate reading that was
+// overruled by the judge is the only evidence there is that the gate would have
+// been wrong, and a record that keeps only the readings the gate acted on can
+// report its own accuracy and nothing else.
+//
+// The three decisions are what the gate did, not what it thought. Accept and
+// reject mean no judge was called. Judge means the statement went on to stage 6
+// either because the gate was not confident or because the audit sample pulled
+// it back, and Audited says which of those two it was.
+type GateVerdict struct {
+	Score    float64 `json:"score"`
+	Decision string  `json:"decision"` // accept, reject, judge
+	Audited  bool    `json:"audited,omitempty"`
+}
+
+// What the gate may decide.
+const (
+	GateAccept = "accept"
+	GateReject = "reject"
+	GateJudge  = "judge"
+)
+
 // Record is one statement with its full verification state, the unit stored
 // in job artifacts and, when verified, in the trusted store.
 type Record struct {
-	ID              string    `json:"id"`
-	DocID           string    `json:"doc_id"`
-	ProvisionID     string    `json:"provision_id"`
-	Statement       Statement `json:"statement"`
-	Status          string    `json:"status"` // verified, approved, rejected, invalid
-	Invalid         string    `json:"invalid,omitempty"`
-	Entailment      *Judgment `json:"entailment,omitempty"`
-	Falsification   *Judgment `json:"falsification,omitempty"`
-	Model           string    `json:"model,omitempty"`
-	OntologyVersion int       `json:"ontology_version"`
+	ID              string       `json:"id"`
+	DocID           string       `json:"doc_id"`
+	ProvisionID     string       `json:"provision_id"`
+	Statement       Statement    `json:"statement"`
+	Status          string       `json:"status"` // verified, approved, rejected, invalid
+	Invalid         string       `json:"invalid,omitempty"`
+	Gate            *GateVerdict `json:"gate,omitempty"`
+	Entailment      *Judgment    `json:"entailment,omitempty"`
+	Falsification   *Judgment    `json:"falsification,omitempty"`
+	Model           string       `json:"model,omitempty"`
+	OntologyVersion int          `json:"ontology_version"`
 }
 
 // The statuses a record carries.

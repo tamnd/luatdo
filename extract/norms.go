@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/tamnd/luatdo/api"
+	"github.com/tamnd/luatdo/entail"
 	"github.com/tamnd/luatdo/law"
 	"github.com/tamnd/luatdo/norm"
 	"github.com/tamnd/luatdo/ontology"
@@ -26,7 +27,53 @@ type NormJob struct {
 	Candidates      []Candidate   `json:"candidates"`
 	Records         []norm.Record `json:"records"`
 	Usage           api.Usage     `json:"usage"`
+	Verification    Verification  `json:"verification"`
 	CompletedAt     time.Time     `json:"completed_at"`
+}
+
+// Verification is what the verification stages of this job cost and what the
+// cheap gate did to that cost.
+//
+// Usage is the part of the job's total the judges spent, not a second total.
+// The project could never say what verification cost before this field existed,
+// because extraction and judging went into one number, and a milestone about
+// removing judge calls has to be able to say what a judge call is worth.
+type Verification struct {
+	Usage     api.Usage `json:"usage"`
+	Calls     int       `json:"calls"`     // judge calls actually made
+	Accepted  int       `json:"accepted"`  // decided entailed by the gate, no judge call
+	Rejected  int       `json:"rejected"`  // decided not entailed by the gate, no judge call
+	Audited   int       `json:"audited"`   // decided by the gate and sent to the judge anyway
+	Escalated int       `json:"escalated"` // the gate was not confident
+}
+
+// Add sums two verification accounts, which is how a campaign totals what its
+// provisions did.
+func (v Verification) Add(o Verification) Verification {
+	v.Usage = addUsage(v.Usage, o.Usage)
+	v.Calls += o.Calls
+	v.Accepted += o.Accepted
+	v.Rejected += o.Rejected
+	v.Audited += o.Audited
+	v.Escalated += o.Escalated
+	return v
+}
+
+// Settled is the number of statements the gate decided on its own, which is the
+// number of judge calls it removed. An audited statement is not settled: the
+// gate decided it and the judge was called anyway, which is what makes the
+// audit worth its cost.
+func (v Verification) Settled() int { return v.Accepted + v.Rejected }
+
+// Share is the fraction of statements that never reached a judge. It is the
+// saving the gate produced, and it is zero when no gate ran, which reads
+// correctly: no gate means no saving rather than no measurement.
+func (v Verification) Share() float64 {
+	total := v.Settled() + v.Audited + v.Escalated
+	if total == 0 {
+		return 0
+	}
+	return float64(v.Settled()) / float64(total)
 }
 
 // Candidate is one independent extraction run inside a job.
@@ -44,6 +91,11 @@ type NormRunner struct {
 	MaxCorrections int
 	Mode           string // fast or slow
 	Population     int    // independent candidates in slow mode
+	// Gate is stage 5, the cheap entailment gate, and it is optional. A runner
+	// with no gate is the pass as it was: every valid statement costs a judge
+	// call. A runner with one sends the judge only what the gate could not
+	// decide, plus the audit sample.
+	Gate *entail.Gate
 }
 
 type wireStatements struct {
@@ -108,6 +160,11 @@ func (r *NormRunner) Instructions() string {
 // mode Population independent candidates are drawn, the selector unions them
 // by claim, and a statement must pass both the entailment judge and the
 // falsification judge. Every statement keeps its verdicts either way.
+//
+// When a gate is set it runs before either judge and may settle a statement on
+// its own. What it settles has a gate verdict and no entailment verdict, which
+// is how a later reader tells a statement a strong model read from one a cheap
+// model waved through.
 func (r *NormRunner) Run(ctx context.Context, doc *law.Document, provisionID string) (*NormJob, error) {
 	w, err := BuildWindow(doc, provisionID)
 	if err != nil {
@@ -145,16 +202,47 @@ func (r *NormRunner) Run(ctx context.Context, doc *law.Document, provisionID str
 			continue
 		}
 		rec.ID = norm.ID(provisionID, &rec.Statement)
-		ent, usage, err := judge.Entail(ctx, w, &rec.Statement)
-		job.Usage = addUsage(job.Usage, usage)
-		if err != nil {
-			return job, err
+
+		// Stage 5. The gate reads the pair and either decides it or hands it on.
+		// Its reading is stored either way, including when the audit sample pulls
+		// a decided statement back for the judge to check, because a gate that
+		// records only the decisions it acted on cannot be caught being wrong.
+		verified, decided := false, false
+		if r.Gate != nil {
+			v := r.Gate.Verdict(rec.ID, w.Text, &rec.Statement)
+			rec.Gate = &v
+			switch {
+			case v.Decision == norm.GateJudge:
+				job.Verification.Escalated++
+			case v.Audited:
+				job.Verification.Audited++
+			default:
+				verified, decided = v.Decision == norm.GateAccept, true
+				if verified {
+					job.Verification.Accepted++
+				} else {
+					job.Verification.Rejected++
+				}
+			}
 		}
-		rec.Entailment = ent
-		verified := ent.Verdict == norm.VerdictEntailed
+
+		// Stage 6. The strong judge, on what stage 5 left.
+		if !decided {
+			ent, usage, err := judge.Entail(ctx, w, &rec.Statement)
+			job.Usage = addUsage(job.Usage, usage)
+			job.Verification.Usage = addUsage(job.Verification.Usage, usage)
+			job.Verification.Calls++
+			if err != nil {
+				return job, err
+			}
+			rec.Entailment = ent
+			verified = ent.Verdict == norm.VerdictEntailed
+		}
 		if verified && job.Mode == "slow" {
 			fal, usage, err := judge.Falsify(ctx, w, &rec.Statement)
 			job.Usage = addUsage(job.Usage, usage)
+			job.Verification.Usage = addUsage(job.Verification.Usage, usage)
+			job.Verification.Calls++
 			if err != nil {
 				return job, err
 			}

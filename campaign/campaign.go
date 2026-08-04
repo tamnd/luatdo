@@ -18,6 +18,7 @@ import (
 
 	"github.com/tamnd/luatdo/api"
 	"github.com/tamnd/luatdo/coverage"
+	"github.com/tamnd/luatdo/entail"
 	"github.com/tamnd/luatdo/extract"
 	"github.com/tamnd/luatdo/law"
 	"github.com/tamnd/luatdo/ontology"
@@ -28,16 +29,17 @@ import (
 
 // Result is one provision's outcome, and one line of the campaign log.
 type Result struct {
-	Task       coverage.Task `json:"task"`
-	Statements int           `json:"statements"`
-	Entailed   int           `json:"entailed"`
-	Review     int           `json:"review"`
-	Invalid    int           `json:"invalid"`
-	Routes     string        `json:"routes"`
-	Usage      api.Usage     `json:"usage"`
-	Cost       route.Cost    `json:"cost"`
-	Duration   time.Duration `json:"duration"`
-	Err        string        `json:"error,omitempty"`
+	Task       coverage.Task        `json:"task"`
+	Statements int                  `json:"statements"`
+	Entailed   int                  `json:"entailed"`
+	Review     int                  `json:"review"`
+	Invalid    int                  `json:"invalid"`
+	Verified   extract.Verification `json:"verification"`
+	Routes     string               `json:"routes"`
+	Usage      api.Usage            `json:"usage"`
+	Cost       route.Cost           `json:"cost"`
+	Duration   time.Duration        `json:"duration"`
+	Err        string               `json:"error,omitempty"`
 }
 
 // String is the reporting line: one provision, one line, every number a
@@ -47,31 +49,50 @@ func (r Result) String() string {
 		return fmt.Sprintf("norms %s route=%s failed after %s: %s",
 			r.Task.ProvisionID, r.Routes, r.Duration.Round(time.Second), r.Err)
 	}
-	return fmt.Sprintf("norms %s route=%s statements=%d entailed=%d review=%d time=%s tokens=%d cost=%s",
-		r.Task.ProvisionID, r.Routes, r.Statements, r.Entailed, r.Review,
+	return fmt.Sprintf("norms %s route=%s statements=%d entailed=%d review=%d%s time=%s tokens=%d cost=%s",
+		r.Task.ProvisionID, r.Routes, r.Statements, r.Entailed, r.Review, gateLine(r.Verified),
 		r.Duration.Round(time.Second), r.Usage.TotalTokens, r.Cost)
+}
+
+// gateLine reports what the cheap gate did, and reports nothing at all when no
+// gate ran. A run without a gate is not a run whose gate settled nothing, and
+// printing "gate=0" on every line of every campaign since the first would say
+// the second.
+func gateLine(v extract.Verification) string {
+	if v.Settled()+v.Audited+v.Escalated == 0 {
+		return ""
+	}
+	return fmt.Sprintf(" gate=%d/%d judged=%d", v.Settled(), v.Settled()+v.Audited+v.Escalated, v.Calls)
 }
 
 // Summary is the whole campaign.
 type Summary struct {
-	Queued     int           `json:"queued"`
-	Done       int           `json:"done"`
-	Failed     int           `json:"failed"`
-	Skipped    int           `json:"skipped"`
-	Statements int           `json:"statements"`
-	Entailed   int           `json:"entailed"`
-	Review     int           `json:"review"`
-	Invalid    int           `json:"invalid"`
-	Usage      api.Usage     `json:"usage"`
-	Cost       route.Cost    `json:"cost"`
-	Duration   time.Duration `json:"duration"`
-	StartedAt  time.Time     `json:"started_at"`
+	Queued     int                  `json:"queued"`
+	Done       int                  `json:"done"`
+	Failed     int                  `json:"failed"`
+	Skipped    int                  `json:"skipped"`
+	Statements int                  `json:"statements"`
+	Entailed   int                  `json:"entailed"`
+	Review     int                  `json:"review"`
+	Invalid    int                  `json:"invalid"`
+	Verified   extract.Verification `json:"verification"`
+	Usage      api.Usage            `json:"usage"`
+	Cost       route.Cost           `json:"cost"`
+	Duration   time.Duration        `json:"duration"`
+	StartedAt  time.Time            `json:"started_at"`
 }
 
 func (s Summary) String() string {
-	return fmt.Sprintf("campaign: %d done, %d failed, %d skipped of %d queued, %d statements, %d entailed, %d in review, %d tokens, cost %s, %s",
+	line := fmt.Sprintf("campaign: %d done, %d failed, %d skipped of %d queued, %d statements, %d entailed, %d in review, %d tokens, cost %s, %s",
 		s.Done, s.Failed, s.Skipped, s.Queued, s.Statements, s.Entailed, s.Review,
 		s.Usage.TotalTokens, s.Cost, s.Duration.Round(time.Second))
+	v := s.Verified
+	if v.Settled()+v.Audited+v.Escalated == 0 {
+		return line
+	}
+	return line + fmt.Sprintf("\ngate: %d statements settled without a judge of %d, %.1f%% of calls saved, %d audited, %d escalated, %d judge calls made costing %d tokens",
+		v.Settled(), v.Settled()+v.Audited+v.Escalated, 100*v.Share(),
+		v.Audited, v.Escalated, v.Calls, v.Usage.TotalTokens)
 }
 
 // Runner works a queue of provisions with a pool of workers.
@@ -84,6 +105,7 @@ type Runner struct {
 	Mode           string
 	Population     int
 	MaxCorrections int
+	Gate           *entail.Gate // stage 5, off unless a caller loads one
 	Workers        int
 	Report         func(Result)
 	Now            func() time.Time
@@ -178,6 +200,7 @@ func (r *Runner) Run(ctx context.Context, tasks []coverage.Task) (Summary, error
 		summary.Entailed += res.Entailed
 		summary.Review += res.Review
 		summary.Invalid += res.Invalid
+		summary.Verified = summary.Verified.Add(res.Verified)
 	}
 	summary.Skipped = summary.Queued - summary.Done - summary.Failed
 	summary.Duration = r.now().Sub(summary.StartedAt)
@@ -208,6 +231,7 @@ func (r *Runner) one(ctx context.Context, doc *law.Document, task coverage.Task,
 		MaxCorrections: r.MaxCorrections,
 		Mode:           r.Mode,
 		Population:     r.Population,
+		Gate:           r.Gate,
 	}
 	res := Result{Task: task}
 	job, err := runner.Run(ctx, doc, task.ProvisionID)
@@ -222,6 +246,8 @@ func (r *Runner) one(ctx context.Context, doc *law.Document, task coverage.Task,
 		res.Err = err.Error()
 		return res
 	}
+
+	res.Verified = job.Verification
 
 	var items []review.Item
 	at := r.now().UTC().Format(time.RFC3339)

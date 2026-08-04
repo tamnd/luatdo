@@ -6,6 +6,7 @@ import (
 
 	"github.com/tamnd/luatdo/api"
 	"github.com/tamnd/luatdo/norm"
+	"github.com/tamnd/luatdo/omission"
 	"github.com/tamnd/luatdo/route"
 )
 
@@ -183,5 +184,30 @@ func TestReportSaysHowManyReferencesTheConceptLayerCouldHavePlaced(t *testing.T)
 	}
 	if !strings.Contains(r.String(), "1 of 2 references") {
 		t.Errorf("the denominator belongs in the line:\n%s", r.String())
+	}
+}
+
+func TestOmissionSectionNamesAnUnrunAudit(t *testing.T) {
+	var r Report
+	out := r.String()
+	if !strings.Contains(out, "omission       not audited") {
+		t.Errorf("a report with no audit has to say so:\n%s", out)
+	}
+}
+
+func TestAuditFillsTheOmissionSection(t *testing.T) {
+	r := Report{Documents: 10, Reached: 7, Extractable: 100, Extracted: 60}
+	var a omission.Report
+	a.Provision("d1", "p1", "Người sử dụng lao động phải trả lương đúng hạn.", nil)
+	r.Audit(a)
+	if r.Omission.Documents != 3 || r.Omission.Provisions != 40 {
+		t.Errorf("omission = %+v", r.Omission)
+	}
+	out := r.String()
+	if !strings.Contains(out, "3 documents in scope untouched, 40 extractable provisions with no job") {
+		t.Errorf("section = %s", out)
+	}
+	if !strings.Contains(out, "1 produced nothing at all") {
+		t.Errorf("the audit counts are missing:\n%s", out)
 	}
 }

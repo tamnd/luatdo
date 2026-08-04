@@ -234,6 +234,7 @@ func cmdRun(args []string) error {
 	population := fs.Int("population", 3, "independent candidates in slow mode")
 	corrections := fs.Int("max-corrections", 2, "bounded retries on invalid model output")
 	dryRun := fs.Bool("dry-run", false, "print the queue and the plan, call no model")
+	useGate := fs.Bool("gate", false, "triage with the distilled entailment gate before calling the judge")
 	scope := fs.String("campaign", "", "restrict the queue to a named campaign, see luatdo campaign list")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -294,10 +295,14 @@ func cmdRun(args []string) error {
 	ctx, stop := drainOnSignal(os.Stderr, "draining, finishing the provisions already in flight, signal again to abort")
 	defer stop()
 
+	gate, err := gateIfAsked(s, *useGate)
+	if err != nil {
+		return err
+	}
 	runner := &campaign.Runner{
 		Store: s, Registry: reg, Completer: eng.completer, Pricing: eng.pricing,
 		Model: eng.model, Mode: *mode, Population: *population,
-		MaxCorrections: *corrections, Workers: workers,
+		MaxCorrections: *corrections, Gate: gate, Workers: workers,
 		Report: func(res campaign.Result) { fmt.Println(res) },
 	}
 	fmt.Printf("run: %d provisions queued, %d workers, mode %s, routes %s\n", len(tasks), workers, *mode, eng.source)
