@@ -10,7 +10,6 @@ package norm
 
 import (
 	"fmt"
-	"slices"
 	"strings"
 
 	"github.com/tamnd/luatdo/law"
@@ -359,95 +358,15 @@ func blank(s string) bool { return strings.TrimSpace(s) == "" }
 // extraction cited and the provision text the evidence must quote. It returns
 // the first violation, and it fills in the evidence byte offsets as a side
 // effect when the quote is genuine.
+//
+// The checking lives in Violations, which returns all of them. Validate is the
+// pipeline's view of it: a statement that breaks one invariant is refused, and
+// nothing downstream cares what else was wrong with it.
 func Validate(s *Statement, reg *ontology.Registry, provisionText string) error {
-	if !slices.Contains(Types, s.Type) {
-		return fmt.Errorf("statement type %q is not in the closed set", s.Type)
-	}
-	if s.Evidence.Quote == "" {
-		return fmt.Errorf("statement has no evidence quote")
-	}
-	start := strings.Index(provisionText, s.Evidence.Quote)
-	if start < 0 {
-		return fmt.Errorf("evidence quote does not appear verbatim in the provision")
-	}
-	s.Evidence.Start = start
-	s.Evidence.End = start + len(s.Evidence.Quote)
-	if bearerRequired[s.Type] && (s.Bearer == nil || strings.TrimSpace(s.Bearer.Text) == "") {
-		return fmt.Errorf("a %s needs a bearer and this one has none", s.Type)
-	}
-	if s.Bearer != nil && !s.Bearer.IsActor {
-		// The flag is not decoration. A bearer that the extractor did not call
-		// an actor is a bearer it did not believe in, and question 10 counts on
-		// telling that apart from a bearer nobody wrote down.
-		return fmt.Errorf("the bearer %q is not marked as an actor", s.Bearer.Text)
-	}
-	if err := validateClauses(s, provisionText); err != nil {
-		return err
-	}
-	if err := validateSanction(s, provisionText); err != nil {
-		return err
-	}
-	if s.Deadline != nil && strings.TrimSpace(s.Deadline.Text) == "" {
-		return fmt.Errorf("a deadline with no phrase behind it is a number somebody chose")
-	}
-	if s.Confidence < 0 || s.Confidence > 1 {
-		return fmt.Errorf("confidence %v is outside [0,1]", s.Confidence)
-	}
-	for _, ref := range []*Ref{s.Bearer, s.Counterparty, &s.Action, s.Object} {
-		if ref == nil || ref.ClassID == "" {
-			continue
-		}
-		if reg.Class(ref.ClassID) == nil {
-			return fmt.Errorf("class %q is not in ontology v%d", ref.ClassID, reg.Version)
-		}
-	}
-	if s.Bearer != nil && s.Bearer.ClassID != "" && bearerRequired[s.Type] {
-		if !reg.IsA(s.Bearer.ClassID, "vn-legal:LegalActor") {
-			return fmt.Errorf("bearer class %q of a %s must be a legal actor", s.Bearer.ClassID, s.Type)
-		}
+	if vs := Violations(s, reg, provisionText); len(vs) > 0 {
+		return vs[0]
 	}
 	return nil
-}
-
-// validateClauses checks that every condition and exception is a kind from its
-// closed set and quotes the provision. The quote is the point: a condition
-// nobody can locate in the text is a condition nobody can check.
-func validateClauses(s *Statement, provisionText string) error {
-	for _, c := range s.Conditions {
-		if !slices.Contains(ConditionKinds, c.Kind) {
-			return fmt.Errorf("condition kind %q is not in the closed set", c.Kind)
-		}
-		if err := quotes(provisionText, c.Quote, "condition"); err != nil {
-			return err
-		}
-	}
-	for _, e := range s.Exceptions {
-		if !slices.Contains(ExceptionKinds, e.Kind) {
-			return fmt.Errorf("exception kind %q is not in the closed set", e.Kind)
-		}
-		if err := quotes(provisionText, e.Quote, "exception"); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// validateSanction enforces the one rule that makes a sanction a fact rather
-// than a summary: it names the provision that imposes it.
-func validateSanction(s *Statement, provisionText string) error {
-	if s.Type == "sanction" && s.Sanction == nil {
-		return fmt.Errorf("a sanction statement must name the sanction")
-	}
-	if s.Sanction == nil {
-		return nil
-	}
-	if strings.TrimSpace(s.Sanction.Text) == "" {
-		return fmt.Errorf("a sanction with no text is not a sanction")
-	}
-	if strings.TrimSpace(s.Sanction.LegalBasis) == "" {
-		return fmt.Errorf("the sanction %q cites no legal basis", s.Sanction.Text)
-	}
-	return quotes(provisionText, s.Sanction.Quote, "sanction")
 }
 
 func quotes(text, quote, what string) error {
