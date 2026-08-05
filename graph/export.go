@@ -199,6 +199,10 @@ func Export(dir string, in Input) error {
 		}); err != nil {
 		return err
 	}
+	written, err := writtenNodes(docs)
+	if err != nil {
+		return err
+	}
 	if err := writeCSV(filepath.Join(dir, "cites.csv"),
 		[]string{":START_ID", ":END_ID", "method", "snippet", ":TYPE"},
 		func(w *csv.Writer) error {
@@ -213,6 +217,17 @@ func Export(dir string, in Input) error {
 				from := l.FromProvision
 				if from == "" {
 					from = l.FromDoc
+				}
+				// Both ends are checked against the nodes this export wrote,
+				// the same fence the term use edges get. A citation whose
+				// source provision was folded away by splitOnce, or whose
+				// target document is not in this export, is a row naming a node
+				// that is not there, and neo4j-admin refuses the entire import
+				// over one of those rather than skipping it. Campaign scope hid
+				// this because it trims links to the scope already, so the full
+				// corpus was the first export to carry one.
+				if !written[from] || !written[l.ToDoc] {
+					continue
 				}
 				if err := w.Write([]string{from, l.ToDoc, l.Method, l.Snippet, relType}); err != nil {
 					return err
@@ -727,6 +742,24 @@ func splitOnce(d *law.Document) ([]law.Component, []law.TextVersion) {
 // The document is handed to the callback because a top level component is
 // contained by its document rather than by another component, and the walker
 // is the only place that still knows which document a component came out of.
+// writtenNodes is every identifier the document node files declare: the
+// documents themselves and their components as splitOnce leaves them.
+//
+// It exists because the node files and the relationship files are built from
+// different walks, and the only thing that keeps them agreeing is asking the
+// same question both times.
+func writtenNodes(docs []*law.Document) (map[string]bool, error) {
+	out := make(map[string]bool, len(docs))
+	for _, d := range docs {
+		out[d.ID] = true
+	}
+	err := eachComponent(docs, func(_ *law.Document, c *law.Component) error {
+		out[c.ID] = true
+		return nil
+	})
+	return out, err
+}
+
 func eachComponent(docs []*law.Document, visit func(*law.Document, *law.Component) error) error {
 	for _, d := range docs {
 		components, _ := splitOnce(d)
@@ -1071,13 +1104,19 @@ type Summary struct {
 	Contains         int `json:"contains"`
 	Cites            int `json:"cites"`
 	Unresolved       int `json:"unresolved"`
-	Terms            int `json:"terms"`
-	Defines          int `json:"defines"`
-	Concepts         int `json:"concepts"`
-	Mentions         int `json:"mentions"`
-	Subjects         int `json:"subjects"`
-	AboutSubject     int `json:"about_subject"`
-	Norms            int `json:"norms"`
+	// DanglingCites is the citations that resolved to a document and still
+	// could not be written, because one end is a node this export does not
+	// declare. It is reported apart from Unresolved because they are different
+	// failures: unresolved is the linker not finding a target, dangling is the
+	// projection folding a node the linker had already pointed at.
+	DanglingCites int `json:"dangling_cites"`
+	Terms         int `json:"terms"`
+	Defines       int `json:"defines"`
+	Concepts      int `json:"concepts"`
+	Mentions      int `json:"mentions"`
+	Subjects      int `json:"subjects"`
+	AboutSubject  int `json:"about_subject"`
+	Norms         int `json:"norms"`
 	// NormEdges is every edge hanging off a Norm: the provision it came from in
 	// both directions, the participants, and the conditions, exceptions and
 	// sanctions. It is one number rather than eight because what it is for is
@@ -1151,12 +1190,27 @@ func Summarize(in Input) Summary {
 		s.AboutSubject++
 		return nil
 	})
+	// The walk cannot fail here for the same reason the ones above it ignore
+	// their errors: the visitor never returns one.
+	written, _ := writtenNodes(in.Docs)
 	for _, l := range in.Links {
 		if l.ToDoc == "" {
 			s.Unresolved++
-		} else {
-			s.Cites++
+			continue
 		}
+		from := l.FromProvision
+		if from == "" {
+			from = l.FromDoc
+		}
+		// Counted the way the CSV is written, because this number is what the
+		// drift check compares a live database against, and a summary that
+		// counted rows the export refuses to write would report drift on every
+		// run of a database that is exactly right.
+		if !written[from] || !written[l.ToDoc] {
+			s.DanglingCites++
+			continue
+		}
+		s.Cites++
 	}
 	terms := map[string]bool{}
 	for _, d := range in.Definitions {
@@ -1253,6 +1307,9 @@ func (s Summary) String() string {
 	if s.FoldedComponents > 0 || s.FoldedVersions > 0 {
 		out += fmt.Sprintf(", folded %d components and %d versions onto identifiers their own document had already used",
 			s.FoldedComponents, s.FoldedVersions)
+	}
+	if s.DanglingCites > 0 {
+		out += fmt.Sprintf(", dropped %d citations with an end this export does not declare", s.DanglingCites)
 	}
 	if s.Terms > 0 {
 		out += fmt.Sprintf(", terms %d, defines %d", s.Terms, s.Defines)
