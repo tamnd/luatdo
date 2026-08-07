@@ -103,6 +103,29 @@ luatdo neo4j wipe      # throw the imported graph away
 `load` is a separate step from `up` because the offline importer is the fast path and refuses to run against a live database.
 Eight million nodes take about a minute that way and hours over Bolt.
 
+### The same graph as tables
+
+The archive above is the graph in the shape `neo4j-admin` wants, which is the wrong shape for anything that is not Neo4j.
+The same graph is published as Parquet in the same repository, one directory per table, so you can page through it in the browser or read it without installing a database:
+
+```python
+from datasets import load_dataset
+
+docs = load_dataset("open-index/luatdo-graph", "documents", split="train")
+```
+
+Node tables have an `id` and a `labels` list, relationship tables have a `start_id`, an `end_id` and a `type`, and the endpoints join to node `id`.
+Everything is typed, so a missing value is null rather than an empty string.
+
+To produce that from your own export:
+
+```sh
+luatdo export parquet
+```
+
+It reads the Neo4j export rather than the store, so what is in the dump is what gets converted, and it writes the dataset card alongside the tables.
+The card is generated from the tables that were actually written, including the row counts and the node labels that are actually present, which is how the published card came to admit that the concept layer is empty.
+
 ## Quick start
 
 To build the graph yourself instead:
