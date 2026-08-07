@@ -37,8 +37,9 @@ type Config struct {
 	Heap      string
 	PageCache string
 	// Export is the directory holding import.sh and the CSV files. It is mounted
-	// writable, because the importer writes its report next to the data it read
-	// and refuses to start when it cannot.
+	// read only, because the import reads it and writes its report to the volume
+	// instead, and 3.4GB somebody waited to download is worth not being able to
+	// damage.
 	Export string
 }
 
@@ -103,6 +104,14 @@ func (c Config) Load() []Step {
 				"-v", c.Volume + ":/data",
 				"-w", "/import",
 				c.Image, "sh", "./import.sh",
+				// The report goes on the volume rather than next to the CSV
+				// files. The export is a directory on the host owned by whoever
+				// downloaded it, the image runs as neo4j, and on a rootful
+				// docker host those are different users, so the report is the
+				// one file in the whole import that cannot be written. It failed
+				// there and nowhere else, after reading 3.4GB, with an access
+				// denied about a directory the person can see is theirs.
+				"--report-file=/data/import.report",
 			},
 			Why: "importing " + c.Export + " into volume " + c.Volume + " as database " + c.Database,
 		},
@@ -219,9 +228,9 @@ func (c Config) mount() string {
 	if resolved, err := filepath.EvalSymlinks(source); err == nil {
 		source = resolved
 	}
-	m := source + ":/import"
+	m := source + ":/import:ro"
 	if runtime.GOOS == "linux" {
-		m += ":z"
+		m += ",z"
 	}
 	return m
 }

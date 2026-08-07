@@ -17,11 +17,11 @@ import "os"
 // HTTPS with no token for a public repository, which is the whole of what Fetch
 // needs.
 const (
-	DatasetVersion = "2026.08"
+	DatasetVersion = "2026.08.1"
 	DatasetRepo    = "open-index/luatdo-graph"
 	DatasetURL     = "https://huggingface.co/datasets/" + DatasetRepo + "/resolve/main/luatdo-graph-" + DatasetVersion + ".tar.gz"
-	DatasetSHA256  = "1189cf9a80fa819b1978f7a9f2693a0548c00579fb61f89a304da62c91a791f5"
-	DatasetBytes   = 576243360
+	DatasetSHA256  = "41aa424e3e1e805cee634d92119b4e9abe81ff34e976d2f9f9fbbfea194135cf"
+	DatasetBytes   = 576243905
 )
 
 // PublishedDataset is what luatdo neo4j fetch downloads when told nothing else.

@@ -1013,8 +1013,16 @@ func writeCSV(path string, header []string, body func(*csv.Writer) error) error 
 // spanning multiple lines, while the fixture, whose text is one line, imported
 // fine.
 //
-// The importer also writes import.report next to the data, so the dump has to
-// be run from a directory somebody can write to.
+// The importer also writes import.report into the working directory, so by
+// default the dump has to be run from a directory somebody can write to.
+//
+// Both scripts pass their own arguments through to neo4j-admin, and a repeated
+// option there takes the last value given. That exists so a caller running this
+// inside a container can move the report somewhere writable without this file
+// having to know anything about containers, and it is not a hypothetical: a
+// bind mounted export on a rootful docker host belongs to the host user and the
+// image runs as neo4j, so the report is the one thing in the whole import that
+// cannot be written.
 func writeImportScripts(dir string) error {
 	args := `database import full luatdo --overwrite-destination --multiline-fields=true --array-delimiter="` + arrayDelimiter + `" ` +
 		`--nodes=documents.csv --nodes=components.csv --nodes=text_versions.csv ` +
@@ -1033,8 +1041,16 @@ func writeImportScripts(dir string) error {
 		`--relationships=temporal_edges.csv --relationships=involves.csv ` +
 		`--relationships=act_chains.csv --relationships=act_participants.csv ` +
 		`--relationships=about_act.csv`
-	sh := "#!/bin/sh\n# Run from this directory, which must be writable, with the database stopped.\nneo4j-admin " + args + "\n"
-	cmd := "@echo off\r\nrem Run from this directory, which must be writable, with the database stopped.\r\nneo4j-admin " + args + "\r\n"
+	sh := "#!/bin/sh\n" +
+		"# Run from this directory, which must be writable, with the database stopped.\n" +
+		"# Anything passed to this script goes to neo4j-admin after the arguments below,\n" +
+		"# so a repeated option here overrides the one set there.\n" +
+		"neo4j-admin " + args + " \"$@\"\n"
+	cmd := "@echo off\r\n" +
+		"rem Run from this directory, which must be writable, with the database stopped.\r\n" +
+		"rem Anything passed to this script goes to neo4j-admin after the arguments below,\r\n" +
+		"rem so a repeated option here overrides the one set there.\r\n" +
+		"neo4j-admin " + args + " %*\r\n"
 	if err := os.WriteFile(filepath.Join(dir, "import.sh"), []byte(sh), 0o755); err != nil {
 		return err
 	}

@@ -40,16 +40,18 @@ $arch = 'amd64'
 if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { $arch = 'arm64' }
 
 if (-not $Version) {
-    # The release page redirects to the newest tag, which answers this without
-    # spending one of the sixty unauthenticated API calls an address gets per
-    # hour.
+    # The API rather than the redirect that install.sh follows. Windows
+    # PowerShell 5.1 throws a NullReferenceException on -MaximumRedirection 0
+    # and leaves nothing on the exception to read a Location header out of, so
+    # there is no redirect here to look at. This costs one of the sixty
+    # unauthenticated API calls an address gets in an hour, which for an
+    # installer is a trade worth making.
     try {
-        $head = Invoke-WebRequest -Uri "https://github.com/$repo/releases/latest" -MaximumRedirection 0 -ErrorAction SilentlyContinue
-        $location = $head.Headers.Location
+        $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases/latest" -Headers @{ 'User-Agent' = 'luatdo-install' }
+        $Version = $release.tag_name
     } catch {
-        $location = $_.Exception.Response.Headers['Location']
+        Fail "could not work out the latest version, pass -Version vX.Y.Z. The release list said: $($_.Exception.Message)"
     }
-    if ($location) { $Version = ($location -split '/tag/')[-1] }
 }
 if (-not $Version) {
     Fail 'could not work out the latest version, pass -Version vX.Y.Z'
