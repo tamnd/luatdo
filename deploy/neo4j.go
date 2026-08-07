@@ -16,6 +16,7 @@ package deploy
 
 import (
 	"fmt"
+	"path/filepath"
 	"runtime"
 	"strconv"
 )
@@ -196,13 +197,29 @@ func (c Config) Browser() string {
 
 // mount is the export directory bind mount.
 //
+// The path is resolved through any symlinks first, because on macOS the runtime
+// is a virtual machine and the mount source is read inside it. /tmp on macOS is
+// a symlink to /private/tmp, the machine shares /private and not /tmp, and so an
+// export under /tmp is handed over as a path that exists on the host, does not
+// exist in the machine, and fails with "statfs: no such file or directory" about
+// a directory the person can see is there. Resolving it here turns that into a
+// mount that works. On the machines where nothing is symlinked this changes
+// nothing.
+//
 // The z suffix relabels for SELinux and is added only on Linux, which is the
 // only place it means anything. On Windows the source is a path with a drive
 // letter in it, so it already contains a colon, and every colon that can be
 // left out of that argument is one fewer thing for a runtime's mount parser to
 // get wrong.
 func (c Config) mount() string {
-	m := c.Export + ":/import"
+	source := c.Export
+	// Best effort. A path that cannot be resolved is passed through as it was
+	// given, because the runtime's own error about it is better than one from
+	// here about a step before the one that matters.
+	if resolved, err := filepath.EvalSymlinks(source); err == nil {
+		source = resolved
+	}
+	m := source + ":/import"
 	if runtime.GOOS == "linux" {
 		m += ":z"
 	}

@@ -1,6 +1,8 @@
 package deploy
 
 import (
+	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -115,11 +117,43 @@ func TestEnvNamesMatchWhatTheToolReads(t *testing.T) {
 	}
 }
 
+func TestMountResolvesSymlinksInTheSource(t *testing.T) {
+	// This is the failure the first macOS run hit. The runtime there is a virtual
+	// machine that shares /private and not /tmp, /tmp is a symlink to
+	// /private/tmp, and an unresolved path fails inside the machine with
+	// "statfs: no such file or directory" about a directory that is plainly
+	// there on the host.
+	real := t.TempDir()
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("this platform will not make a symlink here: %v", err)
+	}
+	c := Default()
+	c.Export = link
+	resolved, err := filepath.EvalSymlinks(real)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := c.mount(); !strings.HasPrefix(got, resolved+":/import") {
+		t.Errorf("mount is %q and should name %s, which is where the directory really is", got, resolved)
+	}
+}
+
+func TestMountPassesThroughAPathThatCannotBeResolved(t *testing.T) {
+	c := Default()
+	c.Export = filepath.Join(t.TempDir(), "not-there")
+	// The runtime's own complaint about a missing directory is more useful than
+	// one from here about the step before it.
+	if got := c.mount(); !strings.HasPrefix(got, c.Export+":/import") {
+		t.Errorf("mount is %q and should have passed the path through unchanged", got)
+	}
+}
+
 func TestMountRelabelsOnLinuxOnly(t *testing.T) {
 	c := Default()
-	c.Export = "/tmp/export"
+	c.Export = t.TempDir()
 	m := c.mount()
-	if !strings.HasPrefix(m, "/tmp/export:/import") {
+	if !strings.Contains(m, ":/import") {
 		t.Fatalf("mount is %q and should bind the export at /import", m)
 	}
 	// SELinux relabelling is a Linux notion. Podman on macOS rejects the suffix
