@@ -3,11 +3,14 @@
 `luatdo` is a single static binary with no runtime dependencies.
 The whole state of a machine is one data directory plus one routes file, so a host is set up by copying two things and starting a timer.
 
+This is about running the pipeline on a host.
+To install the tool and read the published graph without running anything, see the install section of the top level README, or run `luatdo neo4j install`.
+
 ## Linux
 
 ```sh
-make dist
-sudo install -m 0755 dist/luatdo-linux-amd64 /usr/local/bin/luatdo
+curl -fsSL https://raw.githubusercontent.com/tamnd/luatdo/main/install.sh | sh -s -- --bin-dir=/tmp/luatdo-install
+sudo install -m 0755 /tmp/luatdo-install/luatdo /usr/local/bin/luatdo
 
 sudo useradd --system --home /var/lib/luatdo --shell /usr/sbin/nologin luatdo
 sudo install -d -o luatdo -g luatdo /var/lib/luatdo
@@ -43,10 +46,12 @@ Provisions already in flight finish and are committed, and everything else stays
 ## Windows
 
 ```powershell
-mkdir "C:\Program Files\luatdo"
-Copy-Item .\dist\luatdo-windows-amd64.exe "C:\Program Files\luatdo\luatdo.exe"
+irm https://raw.githubusercontent.com/tamnd/luatdo/main/install.ps1 | iex
 .\deploy\luatdo-task.ps1
 ```
+
+The installer puts the binary under `%LOCALAPPDATA%\luatdo\bin` and adds that to the user PATH, so none of this needs an administrator.
+A scheduled task that has to run as a service account wants the binary somewhere that account can read instead, which means copying it to `C:\Program Files\luatdo` by hand.
 
 The script registers a scheduled task that runs `luatdo doctor` first and starts the campaign only if a route answers, which is the same guard the systemd unit uses.
 One difference is worth knowing: `Stop-ScheduledTask` kills the process rather than asking it to drain.

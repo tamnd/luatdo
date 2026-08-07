@@ -55,14 +55,59 @@ The two datasets overlap and they do not carry the same fields, so an instrument
 UTS_VLC is cleaned text with no dates in it at all and th1nhng0 carries the commencement date from vbpl.vn, and a parse that let the later run win threw one of those away depending on the order the datasets were fetched in.
 The incoming parse wins every field it fills and the record already on disk supplies every field it leaves empty, so the clean text and the date both survive.
 
-## Quick start
+## Install
+
+On Linux and macOS:
 
 ```sh
-go install github.com/tamnd/luatdo/cmd/luatdo@latest
+curl -fsSL https://raw.githubusercontent.com/tamnd/luatdo/main/install.sh | sh
+```
 
-docker run -d --name luatdo-neo4j -p 7474:7474 -p 7687:7687 \
-  -e NEO4J_AUTH=neo4j/luatdo-dev neo4j:5
+On Windows, in PowerShell:
 
+```powershell
+irm https://raw.githubusercontent.com/tamnd/luatdo/main/install.ps1 | iex
+```
+
+Both take a release binary, check it against the release checksums, and put it somewhere on your PATH that needs no administrator.
+There is nothing to build and no Go toolchain to have.
+If you would rather build it, `go install github.com/tamnd/luatdo/cmd/luatdo@latest` still works.
+
+## The graph, without running the pipeline
+
+The pipeline takes days and a few hundred dollars of model calls to run over the whole corpus.
+The result of running it is published, so you do not have to:
+
+```sh
+luatdo neo4j install
+```
+
+That downloads the graph from [open-index/luatdo-graph](https://huggingface.co/datasets/open-index/luatdo-graph) on Hugging Face, checks it against a pinned checksum, imports it into a local Neo4j offline, and waits until the database will answer a query before telling you it is up.
+It needs podman or docker, about 20GB of disk, and roughly ten minutes on a decent connection.
+The same command works on all three platforms, and the archive is unpacked by the tool itself, so Windows needs no `tar` and no WSL.
+
+When it finishes it prints the four environment variables the rest of the tool reads, in the syntax of the shell you are standing in.
+Then open <http://localhost:7474>, or ask a competency question from the command line.
+
+The pieces are separate commands as well, for when you want to do this in stages or over your own export:
+
+```sh
+luatdo neo4j fetch     # download and unpack the published graph, no runtime needed
+luatdo neo4j load      # offline import, about a minute for eight million nodes
+luatdo neo4j up        # start a server over what was imported
+luatdo neo4j status    # runtime, export, container, and the node and edge counts
+luatdo neo4j down      # stop the server and keep the graph
+luatdo neo4j wipe      # throw the imported graph away
+```
+
+`load` is a separate step from `up` because the offline importer is the fast path and refuses to run against a live database.
+Eight million nodes take about a minute that way and hours over Bolt.
+
+## Quick start
+
+To build the graph yourself instead:
+
+```sh
 luatdo fetch uts_vlc
 luatdo parse
 luatdo cite
