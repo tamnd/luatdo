@@ -33,6 +33,14 @@ func TestLoadRunsTheExportsOwnImportScript(t *testing.T) {
 	if !strings.Contains(args, c.Volume+":/data") {
 		t.Errorf("import writes into /data and nothing mounts the volume there: %s", args)
 	}
+	// The report is the one file the import writes outside the volume by
+	// default, and on a rootful docker host it is the one file it cannot write.
+	if !strings.Contains(args, "--report-file=/data/import.report") {
+		t.Errorf("the report was left to land in the read only mount: %s", args)
+	}
+	if strings.Index(args, "./import.sh") > strings.Index(args, "--report-file") {
+		t.Error("the report flag comes before the script, so it goes to the container runtime rather than through to neo4j-admin")
+	}
 	// The importer is offline by definition and gets no port, no auth and no
 	// name. If any of those appear here somebody has confused it with Up.
 	if strings.Contains(args, "-p ") || strings.Contains(args, "NEO4J_AUTH") {
@@ -153,12 +161,14 @@ func TestMountRelabelsOnLinuxOnly(t *testing.T) {
 	c := Default()
 	c.Export = t.TempDir()
 	m := c.mount()
-	if !strings.Contains(m, ":/import") {
-		t.Fatalf("mount is %q and should bind the export at /import", m)
+	if !strings.Contains(m, ":/import:ro") {
+		t.Fatalf("mount is %q and should bind the export at /import read only", m)
 	}
 	// SELinux relabelling is a Linux notion. Podman on macOS rejects the suffix
-	// on some versions and Windows paths already carry a colon.
-	if got, want := strings.HasSuffix(m, ":z"), runtime.GOOS == "linux"; got != want {
+	// on some versions and Windows paths already carry a colon. It joins the
+	// existing ro option with a comma rather than a colon, because a second
+	// colon there is a second option field and the parsers disagree about it.
+	if got, want := strings.HasSuffix(m, ",z"), runtime.GOOS == "linux"; got != want {
 		t.Errorf("mount %q has the z suffix %v on %s, want %v", m, got, runtime.GOOS, want)
 	}
 }
