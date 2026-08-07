@@ -12,7 +12,11 @@ builds:
       - -s -w -X main.version={{.Version}}
 
 archives:
-  - formats: [tar.gz]
+  # Written out rather than left to the default, because install.sh and
+  # install.ps1 build this name themselves and a default that changes between
+  # goreleaser versions would break every install with a 404.
+  - name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
     format_overrides:
       - goos: windows
         formats: [zip]
