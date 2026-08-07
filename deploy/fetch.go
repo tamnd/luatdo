@@ -156,22 +156,54 @@ func writeFile(path string, r io.Reader, mode os.FileMode) error {
 }
 
 // safeJoin resolves an archive entry against the destination and refuses
-// anything that lands outside it.
+// anything that does not land inside it.
 //
 // An archive is a list of paths chosen by whoever built it, and "../../../"
 // entries are the oldest trick there is. The tool unpacks this into a directory
 // the person running it can write to, which is the case where it matters.
+//
+// The rules here are the same on all three platforms on purpose, and the first
+// version of this was not. filepath.IsAbs("/etc/passwd") is false on Windows,
+// the name has no volume, and Join then rewrites it to a file inside the
+// destination, so the same archive was refused on Linux and quietly accepted on
+// Windows. An entry that means something different depending on where the tool
+// is running is not something to reason about per platform, it is something to
+// refuse everywhere.
 func safeJoin(dir, name string) (string, error) {
+	outside := func() (string, error) {
+		return "", fmt.Errorf("archive entry %q does not resolve inside the destination", name)
+	}
+	slash := filepath.ToSlash(name)
+	switch {
+	case slash == "":
+		return outside()
+	// Tar names separate with forward slashes, so a backslash is a literal
+	// character in a filename on Linux and a separator on Windows. That is the
+	// same split as the drive letter below, and a graph export has no such
+	// filename in it, so the answer is the same: refuse it in both places rather
+	// than let one platform write what the other refused.
+	case strings.Contains(name, `\`):
+		return outside()
+	// Rooted, either as /etc/passwd or as a //server/share UNC path.
+	case strings.HasPrefix(slash, "/"):
+		return outside()
+	// A drive letter, which is two ordinary filename characters on Linux and a
+	// way out of the destination on Windows.
+	case len(slash) >= 2 && slash[1] == ':':
+		return outside()
+	}
 	clean := filepath.Clean(filepath.FromSlash(name))
-	if filepath.IsAbs(clean) || strings.HasPrefix(clean, "..") {
-		return "", fmt.Errorf("archive entry %q points outside the destination", name)
+	if filepath.IsAbs(clean) || filepath.VolumeName(clean) != "" {
+		return outside()
 	}
 	path := filepath.Join(dir, clean)
-	// Checked again after joining, because Clean on its own does not catch
-	// every shape on every platform.
+	// Checked again after joining, because Clean on its own does not catch every
+	// shape on every platform. The comparison is against the whole first element
+	// rather than a prefix, so that a file honestly named "..stray.csv" is not
+	// refused for looking like one.
 	rel, err := filepath.Rel(dir, path)
-	if err != nil || strings.HasPrefix(rel, "..") {
-		return "", fmt.Errorf("archive entry %q points outside the destination", name)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		return outside()
 	}
 	return path, nil
 }

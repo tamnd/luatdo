@@ -153,16 +153,37 @@ func TestFetchReportsAMissingDataset(t *testing.T) {
 }
 
 func TestUnpackRefusesEntriesOutsideTheDestination(t *testing.T) {
+	// Every one of these is refused on every platform, which is the point. The
+	// rooted and drive letter forms were the ones that behaved differently:
+	// "/etc/escaped.csv" is not an absolute path on Windows and was quietly
+	// rewritten to a file inside the destination, so an archive that Linux
+	// refused was accepted there.
 	for _, name := range []string{
 		"../escaped.csv",
 		"neo4j/../../escaped.csv",
 		"/etc/escaped.csv",
+		`C:\Windows\escaped.csv`,
+		`\\server\share\escaped.csv`,
+		"",
 	} {
 		dir := t.TempDir()
 		body := archive(t, []entry{{name: name, body: "x"}})
 		if err := unpack(bytes.NewReader(body), dir); err == nil {
 			t.Errorf("entry %q was unpacked", name)
 		}
+	}
+}
+
+func TestUnpackKeepsFilesThatOnlyLookLikeAnEscape(t *testing.T) {
+	// A refusal built on a prefix test rejects this, and then a legitimate export
+	// fails to unpack for a reason nobody can act on.
+	dir := t.TempDir()
+	body := archive(t, []entry{{name: "neo4j/..stray.csv", body: "x"}})
+	if err := unpack(bytes.NewReader(body), dir); err != nil {
+		t.Fatalf("an ordinary file was refused: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "neo4j", "..stray.csv")); err != nil {
+		t.Error(err)
 	}
 }
 
