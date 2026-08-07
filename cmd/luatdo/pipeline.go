@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -15,6 +16,7 @@ import (
 	"github.com/tamnd/luatdo/concept"
 	"github.com/tamnd/luatdo/conflict"
 	"github.com/tamnd/luatdo/coverage"
+	"github.com/tamnd/luatdo/deploy"
 	"github.com/tamnd/luatdo/fetch"
 	"github.com/tamnd/luatdo/graph"
 	"github.com/tamnd/luatdo/law"
@@ -368,6 +370,7 @@ func cmdExport(args []string) error {
 	check := fs.Bool("check", false, "compare the live database against the store and report drift")
 	scope := fs.String("campaign", "", "run the release gates over a named campaign before exporting")
 	force := fs.Bool("force", false, "export even though the release gates failed, and say so in the output")
+	shard := fs.Int("shard", 1_000_000, "rows per Parquet file")
 	// parseSub rather than fs.Parse, because flag stops at the first argument
 	// that is not a flag and "luatdo export neo4j --campaign labour-2025" would
 	// otherwise dump the whole corpus without a word about the flag it ignored.
@@ -376,12 +379,12 @@ func cmdExport(args []string) error {
 		return err
 	}
 	switch sub {
-	case "neo4j", "rdf", "legalruleml":
+	case "neo4j", "rdf", "legalruleml", "parquet":
 	default:
 		sub = ""
 	}
 	if sub == "" || len(rest) > 0 {
-		return fmt.Errorf("usage: luatdo export neo4j [--merge|--check] [--campaign <name>], luatdo export rdf, or luatdo export legalruleml --campaign <name>")
+		return fmt.Errorf("usage: luatdo export neo4j [--merge|--check] [--campaign <name>], luatdo export rdf, luatdo export parquet, or luatdo export legalruleml --campaign <name>")
 	}
 	s, err := openStore(*dataDir)
 	if err != nil {
@@ -390,6 +393,8 @@ func cmdExport(args []string) error {
 	switch sub {
 	case "rdf":
 		return exportRDF(s)
+	case "parquet":
+		return exportParquet(s, *shard)
 	case "legalruleml":
 		return exportLegalRuleML(s, *scope, *force)
 	}
@@ -520,6 +525,73 @@ func exportRDF(s *store.Store) error {
 	fmt.Printf("export rdf: %s\n", summary)
 	fmt.Printf("wrote %s, graph.nt is the data and vocabulary.ttl is the alignment you can decline to load\n", out)
 	return nil
+}
+
+// exportParquet converts the Neo4j dump into the shape everything that is not
+// Neo4j wants to read.
+//
+// It reads the dump for the same reason exportRDF does, and it takes no campaign
+// flag for the same reason. What is in the dump is what gets published, and a
+// second scoping decision here would let somebody publish a file that says
+// labour and holds the corpus.
+func exportParquet(s *store.Store, shard int) error {
+	dump := filepath.Join(s.Export(), "neo4j")
+	out := filepath.Join(s.Export(), "parquet")
+	// Cleared rather than written over. The shard file names carry the total
+	// number of shards, so a table that shrinks leaves files behind under their
+	// old names, and the card would name a config whose directory holds two
+	// copies of half the rows.
+	if err := os.RemoveAll(out); err != nil {
+		return err
+	}
+	tables, err := graph.ToParquet(dump, out, shard)
+	if err != nil {
+		return err
+	}
+	unpacked, err := dirSize(dump)
+	if err != nil {
+		return err
+	}
+	d := deploy.PublishedDataset()
+	card := graph.CardInput{
+		Repo:          deploy.DatasetRepo,
+		Archive:       filepath.Base(d.URL),
+		ArchiveBytes:  d.Bytes,
+		UnpackedBytes: unpacked,
+	}
+	if err := graph.WriteCard(out, tables, card); err != nil {
+		return err
+	}
+
+	var rows, bytes, files int64
+	for _, t := range tables {
+		rows += t.Rows
+		bytes += t.Bytes
+		files += int64(len(t.Files))
+	}
+	fmt.Printf("export parquet: %d tables, %d rows, %d files, %.1fGB from %.1fGB of CSV\n",
+		len(tables), rows, files, float64(bytes)/(1<<30), float64(unpacked)/(1<<30))
+	fmt.Printf("wrote %s, README.md there is the dataset card and names one config per table\n", out)
+	return nil
+}
+
+func dirSize(dir string) (int64, error) {
+	var total int64
+	err := filepath.WalkDir(dir, func(_ string, e fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if e.IsDir() {
+			return nil
+		}
+		info, err := e.Info()
+		if err != nil {
+			return err
+		}
+		total += info.Size()
+		return nil
+	})
+	return total, err
 }
 
 // exportLegalRuleML writes one campaign's trusted norms as LegalRuleML.
