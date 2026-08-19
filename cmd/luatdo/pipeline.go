@@ -17,6 +17,7 @@ import (
 	"github.com/tamnd/luatdo/conflict"
 	"github.com/tamnd/luatdo/coverage"
 	"github.com/tamnd/luatdo/deploy"
+	"github.com/tamnd/luatdo/event"
 	"github.com/tamnd/luatdo/fetch"
 	"github.com/tamnd/luatdo/graph"
 	"github.com/tamnd/luatdo/law"
@@ -363,6 +364,55 @@ func loadLinks(s *store.Store) ([]cite.Link, error) {
 	return links, nil
 }
 
+// loadExportInput reads every layer the store holds into one projection input.
+//
+// It is a function rather than a block inside the export command because
+// forgetting a layer here is silent. The relation layer and the temporal layer
+// were both built, tested and left out of this assembly for a milestone each,
+// and the act layer went the same way after them: the projection wrote acts.csv
+// with nothing under the header, no gate noticed, and the questions that ask
+// about acts came back empty rather than wrong. A named function has a test
+// against it, which is the only thing that catches an omission.
+//
+// Only the documents and the citations are required. Every other layer loads on
+// the same terms: if the pass has not been run in this store the projection goes
+// without it, because a store part way through the pipeline is the normal case
+// and not an error.
+func loadExportInput(s *store.Store) (graph.Input, error) {
+	docs, err := loadDocs(s)
+	if err != nil {
+		return graph.Input{}, err
+	}
+	links, err := loadLinks(s)
+	if err != nil {
+		return graph.Input{}, err
+	}
+	in := graph.Input{Docs: docs, Links: links}
+	in.Definitions, _ = loadDefinitions(s)
+	in.Registry, _ = ontology.Load(s.Ontology())
+	in.Mentions, _ = loadResolutions(s)
+	// The subject layer needs both halves. Assignments without the vocabulary
+	// are subject identifiers with nothing to name them.
+	if records, err := subject.ReadRecords(filepath.Join(s.Subject(), subject.AssignmentsFile)); err == nil {
+		in.Subjects = records
+		in.Vocabulary, _ = subject.Load()
+	}
+	_ = store.ReadJSON(filepath.Join(s.Trusted(), "statements.json"), &in.Statements)
+	in.Layer, _ = concept.ReadLayer(s.Concepts())
+	in.Relations, _ = relation.ReadEdges(s.Relation())
+	in.Temporal, _ = temporal.ReadLayer(s.Temporal())
+	if report, err := conflict.ReadReport(s.Conflict()); err == nil && report != nil {
+		in.Conflicts = report.Findings
+	}
+	// The act layer is three fields because the projection checks them against
+	// different things, and handing over the chains without the acts writes
+	// edges into nodes that are not there.
+	in.Acts, _ = event.ReadEvents(s.Event())
+	in.Chains, _ = event.ReadChains(s.Event())
+	in.NormActs, _ = event.ReadLinks(s.Event())
+	return in, nil
+}
+
 func cmdExport(args []string) error {
 	fs := flag.NewFlagSet("export", flag.ContinueOnError)
 	dataDir := fs.String("data", "", "data directory")
@@ -398,41 +448,9 @@ func cmdExport(args []string) error {
 	case "legalruleml":
 		return exportLegalRuleML(s, *scope, *force)
 	}
-	docs, err := loadDocs(s)
+	in, err := loadExportInput(s)
 	if err != nil {
 		return err
-	}
-	links, err := loadLinks(s)
-	if err != nil {
-		return err
-	}
-	in := graph.Input{Docs: docs, Links: links}
-	in.Definitions, _ = loadDefinitions(s)
-	in.Registry, _ = ontology.Load(s.Ontology())
-	in.Mentions, _ = loadResolutions(s)
-	// The subject layer only reaches the projection when both halves are there.
-	// A store where luatdo subjects has never run exports the document graph
-	// alone, the same way it does without the ontology.
-	if records, err := subject.ReadRecords(filepath.Join(s.Subject(), subject.AssignmentsFile)); err == nil {
-		in.Subjects = records
-		in.Vocabulary, _ = subject.Load()
-	}
-	_ = store.ReadJSON(filepath.Join(s.Trusted(), "statements.json"), &in.Statements)
-	in.Layer, _ = concept.ReadLayer(s.Concepts())
-	// The relation layer and the temporal layer are loaded on the same terms as
-	// everything else here: if the pass has not been run the projection goes
-	// without them. Both were built milestones ago and neither was ever handed
-	// to the exporter, so the database held a document graph with a norm layer
-	// bolted on and none of the concept relations or amendment history that half
-	// the competency questions are asked of. Nothing failed, because nothing
-	// asked.
-	in.Relations, _ = relation.ReadEdges(s.Relation())
-	in.Temporal, _ = temporal.ReadLayer(s.Temporal())
-	// The conflict findings, on the same terms: a store where luatdo conflicts
-	// check has never run exports without them, and question 19 comes back
-	// empty rather than wrong.
-	if report, err := conflict.ReadReport(s.Conflict()); err == nil && report != nil {
-		in.Conflicts = report.Findings
 	}
 
 	// A campaign scopes the dump as well as the gates. The whole corpus is not

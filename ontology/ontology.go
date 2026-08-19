@@ -138,6 +138,19 @@ type Candidate struct {
 	MergedTo  string   `json:"merged_to,omitempty"`
 	Rationale string   `json:"rationale,omitempty"`
 	At        string   `json:"at"`
+
+	// What the define pass adds. A proposal a person is asked to rule on is
+	// worth a decision only if the row carries the case for it: what the thing
+	// means, how often the corpus asked for it, how many instruments it turned
+	// up in, and which existing class was closest with the reason that class was
+	// not it. Bootstrap rows leave these empty, which is why they are all
+	// optional rather than a second candidate type.
+	Definition string   `json:"definition,omitempty"`
+	Count      int      `json:"count,omitempty"`
+	Docs       int      `json:"docs,omitempty"`
+	Quotes     []string `json:"quotes,omitempty"`
+	Nearest    string   `json:"nearest,omitempty"`
+	Rejected   string   `json:"rejected,omitempty"`
 }
 
 func candidatesPath(dir string) string { return filepath.Join(dir, "candidates.jsonl") }

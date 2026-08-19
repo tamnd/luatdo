@@ -196,6 +196,7 @@ RETURN path
 | `luatdo discover` | Find concepts no article defines, promote them, tag the corpus, link mentions |
 | `luatdo relations` | Read concept to concept relations, fold them across the corpus, answer with them |
 | `luatdo ontology` | Manage the versioned class and predicate registry and its candidates queue |
+| `luatdo schema` | Find out what the closed registry is missing, and measure the finding out |
 | `luatdo extract` | Schema-constrained LLM extraction of entity mentions under the closed registry |
 | `luatdo link` | Resolve mentions against the registry and the defined term table, with scores |
 | `luatdo norms` | Extract norm statements and verify them with the entailment judge |
@@ -416,6 +417,123 @@ question 21    what vn:term:...:giay-phep-xay-dung requires, from the graph alon
                  hồ sơ địa chính (4 provisions in 2 documents, corpus, canonical)
                produced by cấp giấy phép xây dựng (11 provisions in 5 documents, corpus, canonical)
 ```
+
+## What the closed registry is missing
+
+The class registry is closed and frozen on first use.
+A model cannot add to it, because a fabricated predicate in a legal graph is a defect and a registry a model can extend is not a closed registry.
+The cost of that decision is that the registry stays wrong in ways nobody can see from inside it, and for a long time the only thing done about that was to write the cost down.
+
+`luatdo schema` is the machinery for finding out.
+Seven passes, each measured, and none of them writes to the registry.
+
+```sh
+luatdo schema invariants    # which structural rules fire, and how often
+luatdo schema blindspots    # what the corpus keeps asking for and does not get
+luatdo schema define        # open extraction, then define, then match against definitions
+luatdo schema taxonomy      # induce the hierarchy top down and bottom up, and compare
+luatdo schema repair        # a bounded model loop over the records that broke a rule
+luatdo schema conflicts     # decide the concepts the hierarchy puts under two parents
+```
+
+### Define before you canonicalize
+
+The old pipeline proposed a class, compared the label against the registry, and dropped what did not match.
+A near miss and a genuine gap look identical from there, because a label is not a meaning.
+
+The define pass, following EDC, asks the model to define what it proposed before anything is compared, and then matches definitions against definitions.
+Over 533 proposals it defined all 533 and matched 22 of them to an existing class.
+The other 511 went into the queue carrying their definition, their counts, example quotes, and the nearest registry class with the model's reason for rejecting it, in Vietnamese, so a reviewer is ruling on a case rather than on a string.
+
+That is 4 percent matched, which sounds like the registry is missing almost everything.
+It is not, and the review cycle below is how that became clear.
+
+### Induction, both directions
+
+Taxonomy induction is run as its own pass because it fails in its own way.
+The held out target is the hand written subject vocabulary, 144 children under known parents.
+
+| Direction | Placed | Correct |
+| --- | --- | --- |
+| Bottom up | 144 of 144 | 137 |
+| Top down | 143 of 144 | 143 of 143 |
+
+Top down declines to place one child and gets everything it places right.
+Bottom up places everything and gets seven wrong.
+The two agree on 137 of 143, and the disagreements are the interesting rows: bottom up puts vocational education under education, and public investment under public finance, both of which are defensible readings that the hand written vocabulary happens not to take.
+
+This is prompting, and OLLM predicts prompting alone will not produce a structurally sound ontology.
+On a flat two level target with a fixed parent set it does well, and that is a weaker test than OLLM's.
+It is not evidence against OLLM, and nothing here should be read as saying fine tuning is unnecessary.
+
+### The concepts under two parents
+
+Multiple inheritance is legitimate in a general ontology and is not legitimate here, because these edges are induced one provision at a time, so a second parent is nearly always two readings of one word.
+
+The stored relation layer offers no conflict to resolve, because it holds no canonical `BROADER` edge at all.
+That is not the same as having no conflicts, and the resolver says so rather than printing a zero.
+It falls back to the children top down induction left contested, decides them by asking about meaning rather than by taking the higher count, and records which source it ran over.
+
+```text
+conflicts: 3 edges in the layer, 0 of them canonical BROADER, 0 concepts under more than one parent
+note: the relation layer offers no conflict, so the resolver runs over the 1 children top down induction left contested
+  lao-dong/giao-duc-nghe-nghiep        keeps giao-duc, drops lao-dong
+```
+
+No edge is changed.
+The resolution is a proposal for the review queue, the same as everything else here.
+
+### Repair, scored on whether it was right
+
+The repair literature reports near perfect syntactic validity for model repairs, which quietly says the problem is semantic.
+So this scores both, separately, and the gap between them is the finding.
+
+Of 1,479 norm records, 311 broke at least one invariant.
+The bounded loop cleared 168 of them, declined to change 133, drifted on 1, and introduced a new break in 9.
+A second call then asked whether each repair was grounded in the provision it claims to come from, and 107 of 178 were.
+
+So roughly 54 percent of broken records got fixed, and roughly 60 percent of the fixes are actually supported by the text.
+Multiply those and about a third of the original breaks are genuinely repaired.
+Reporting the first number alone would have been the mistake the literature warns about.
+
+### The prediction the invariants test
+
+The cyber threat intelligence work predicts that missing mandatory attributes are the most common schema violation from LLM extraction.
+Our invariants are cardinality rules of exactly that shape, so the firing distribution is a direct test.
+
+| Invariant | Records | Mandatory |
+| --- | --- | --- |
+| `bearer-missing` | 233 | yes |
+| `bearer-not-marked-actor` | 49 | no |
+| `evidence-quote-not-verbatim` | 22 | no |
+| `bearer-class-not-legal-actor` | 7 | no |
+| everything else | 13 | mixed |
+
+235 of 324 breaks are mandatory attribute violations, and one rule accounts for 233 of them.
+The prediction holds.
+It also localises the problem: the extraction is not broadly sloppy, it is specifically bad at naming who the norm binds.
+
+### A cycle actually worked
+
+A queue nobody works is a queue that measures nothing.
+The first cycle went over the 20 labels the corpus asked for most often, out of 530 distinct proposals.
+
+| Decision | Count |
+| --- | --- |
+| Merged into an existing class | 16 |
+| Rejected | 3 |
+| Promoted | 1 |
+
+Candidate precision on that slice is 1 in 20.
+The one promotion is `Công trình xây dựng`, a construction work, because the registry has no class for a physical object that law regulates: not `Location`, which is where a thing is, and not `Amount`, which is how much of it there is, and the corpus asks about the height of the structure.
+
+The 16 merges are the real result.
+`Cơ quan nhà nước`, `Cơ quan hành chính nhà nước` and `Cơ quan chuyên môn thuộc Ủy ban nhân dân cấp tỉnh` are all authorities the registry already has under other names.
+So the 4 percent match rate from the define pass was measuring label distance, not coverage.
+The registry's class coverage is good and its naming is what the corpus keeps missing.
+
+Every decision carries its reason, because the queue is append only and is the whole record of how the registry grew, and a promotion with no reason is indistinguishable later from a promotion nobody thought about.
+510 labels are still pending.
 
 ## An article and what it says
 

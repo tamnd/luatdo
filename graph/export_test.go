@@ -620,3 +620,42 @@ func TestADocumentThatUsesOneIdentifierTwiceIsWrittenOnce(t *testing.T) {
 		t.Errorf("drift = %v, want none, the folded component was never written", lines)
 	}
 }
+
+// The full corpus export died on this and campaign scope hid it, because
+// scoping trims links to the scope before the projection ever sees them.
+// A citation whose source provision was folded away names a node the node files
+// do not declare, and neo4j-admin refuses the whole import over one such row
+// rather than skipping it.
+func TestACitationFromANodeTheExportDoesNotDeclareIsDropped(t *testing.T) {
+	docs, links := fixture()
+	links = append(links, cite.Link{
+		FromDoc:       docs[0].ID,
+		FromProvision: "vn:law:2019:45-2019-qh14:article-404",
+		ToNumber:      "10/2012/QH13", ToDoc: docs[1].ID, Kind: "amends", Method: "pattern",
+	})
+	dir := t.TempDir()
+	if err := Export(dir, Input{Docs: docs, Links: links}); err != nil {
+		t.Fatalf("Export: %v", err)
+	}
+	declared := map[string]bool{}
+	for _, f := range []string{"documents.csv", "components.csv"} {
+		rows := readCSV(t, filepath.Join(dir, f))
+		for _, r := range rows[1:] {
+			declared[r[0]] = true
+		}
+	}
+	for _, r := range readCSV(t, filepath.Join(dir, "cites.csv"))[1:] {
+		if !declared[r[0]] || !declared[r[1]] {
+			t.Errorf("cites row %v names a node no node file declares", r)
+		}
+	}
+	s := Summarize(Input{Docs: docs, Links: links})
+	if s.DanglingCites != 1 {
+		t.Errorf("DanglingCites = %d, want the one citation with a folded source", s.DanglingCites)
+	}
+	// The dropped row is not an unresolved link, and rolling it into that
+	// counter would blame the linker for what the projection did.
+	if s.Unresolved != 1 || s.Cites != 1 {
+		t.Errorf("unresolved %d and cites %d, want the counters kept apart", s.Unresolved, s.Cites)
+	}
+}

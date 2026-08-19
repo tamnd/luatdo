@@ -116,6 +116,7 @@ func cmdOntology(args []string) error {
 	fs := flag.NewFlagSet("ontology", flag.ContinueOnError)
 	dataDir := fs.String("data", "", "data directory")
 	sample := fs.Int("sample", 50, "provisions to sample for bootstrap")
+	why := fs.String("why", "", "the reason for an approve, reject or merge decision")
 	sub, rest, err := parseSub(fs, args)
 	if err != nil {
 		return err
@@ -148,6 +149,18 @@ func cmdOntology(args []string) error {
 		pending := ontology.Pending(all)
 		for _, c := range pending {
 			fmt.Printf("%-9s %-40s %s\n", c.Kind, c.Label, c.Provision)
+			// A row from the define pass carries the case for itself, and a
+			// reviewer who cannot see the definition and the nearest class is
+			// being asked to rule on a bare string.
+			if c.Definition != "" {
+				fmt.Printf("            %s\n", c.Definition)
+			}
+			if c.Count > 0 {
+				fmt.Printf("            asked %d times in %d documents\n", c.Count, c.Docs)
+			}
+			if c.Nearest != "" {
+				fmt.Printf("            nearest %s, not it because: %s\n", c.Nearest, c.Rejected)
+			}
 		}
 		fmt.Printf("%d pending of %d recorded\n", len(pending), len(all))
 		return nil
@@ -156,12 +169,17 @@ func cmdOntology(args []string) error {
 		if label == "" {
 			return fmt.Errorf("usage: luatdo ontology %s <label> [merged-to]", sub)
 		}
+		// The reason is recorded beside the decision because the queue is append
+		// only and is the whole record of how the registry grew. A promotion
+		// with no reason is indistinguishable later from a promotion nobody
+		// thought about.
 		c := ontology.Candidate{
-			Kind:   "class",
-			Label:  label,
-			Source: "review",
-			Status: sub + "d",
-			At:     time.Now().UTC().Format(time.RFC3339),
+			Kind:      "class",
+			Label:     label,
+			Source:    "review",
+			Status:    sub + "d",
+			Rationale: strings.TrimSpace(*why),
+			At:        time.Now().UTC().Format(time.RFC3339),
 		}
 		if sub == "reject" {
 			c.Status = "rejected"
