@@ -58,11 +58,17 @@ var (
 	// on its own, because a reference to an annex in running text continues on
 	// the same line and so never matches.
 	annexLabelLine = regexp.MustCompile(`^(?:PHỤ LỤC|Phụ lục)(?:\s+(?:số\s+)?([IVXLC]+|\d+[A-Za-zĐđ]?))?\s*[:.]?$`)
-	// A sub instrument opens the same way, with its kind alone on a line. It
-	// is not accepted on that alone, because the word also opens the parent
+	// A sub instrument opens the same way, with its kind at the head of a line.
+	// It is not accepted on that alone, because the word also opens the parent
 	// decision's own title block; the issuance formula below is what confirms
 	// it. "QUYẾT ĐỊNH" is deliberately absent: it is the parent's own heading.
-	annexKindLine = regexp.MustCompile(`^(QUY ĐỊNH|QUY CHẾ|QUY TRÌNH|QUY TẮC|ĐIỀU LỆ|NỘI QUY|THỂ LỆ|DANH MỤC|BIỂU MẪU|ĐỀ ÁN|KẾ HOẠCH|CHƯƠNG TRÌNH|PHƯƠNG ÁN|HƯỚNG DẪN)\s*[:.]?$`)
+	//
+	// The kind is often qualified on the same line, as in "CHƯƠNG TRÌNH KHUNG"
+	// or "QUY CHẾ TỔ CHỨC VÀ HOẠT ĐỘNG". The qualifier is required to carry no
+	// lowercase letter, which is what tells a header set in capitals apart from
+	// a sentence that happens to start with the kind, as "Quy định tại khoản 1
+	// Điều 5 được sửa đổi" does.
+	annexKindLine = regexp.MustCompile(`^(QUY ĐỊNH|QUY CHẾ|QUY TRÌNH|QUY TẮC|ĐIỀU LỆ|NỘI QUY|THỂ LỆ|DANH MỤC|BIỂU MẪU|ĐỀ ÁN|KẾ HOẠCH|CHƯƠNG TRÌNH|PHƯƠNG ÁN|HƯỚNG DẪN)[^\p{Ll}]*$`)
 	// The issuance formula that names the parent instrument. Its presence is
 	// what makes the block above it an annex rather than a title.
 	issuanceLine = regexp.MustCompile(`(?i)^[(（]?\s*(?:ban hành\s+)?kèm theo\b`)
@@ -537,6 +543,13 @@ func parseBody(docID, body string) []law.Provision {
 			addHeading(p.at(p.section), line)
 		case p.chapter >= 0 && p.article < 0:
 			addHeading(p.at(p.chapter), line)
+		case p.annex >= 0:
+			// An annex that numbers its parts some other way than the parent
+			// instrument does, "A." and "I." and "1." and "a." down a training
+			// programme, opens no provision here. Its lines belong to the annex
+			// itself. Without this they match no case at all and are dropped,
+			// which is how 746 annexes came to hold a heading and nothing else.
+			p.appendText(p.annex, line)
 		}
 	}
 
@@ -613,6 +626,8 @@ func (p *parser) deepest() int {
 		return p.section
 	case p.chapter >= 0:
 		return p.chapter
+	case p.annex >= 0:
+		return p.annex
 	}
 	return -1
 }

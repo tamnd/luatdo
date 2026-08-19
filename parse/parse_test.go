@@ -479,6 +479,146 @@ func TestParseAnnexLabelNeedsNoIssuance(t *testing.T) {
 	}
 }
 
+// programmeBody is Quyết định số 08/2007/QĐ-BNV in miniature: four articles of
+// housekeeping and then a training programme travelling underneath as an annex.
+// The header carries a qualifier on the same line as its kind, and the
+// programme numbers its parts "A." and "I." and "1." rather than by article,
+// which is the shape 2,979 documents in the corpus take.
+const programmeBody = `**Số hiệu:** 08/2007/QĐ-BNV
+
+---
+
+BỘ NỘI VỤ
+
+Số: 08/2007/QĐ-BNV
+
+QUYẾT ĐỊNH
+
+Ban hành chương trình bồi dưỡng
+
+Điều 1. Ban hành kèm theo Quyết định này chương trình bồi dưỡng ngạch chuyên viên.
+
+Điều 4. Quyết định này có hiệu lực sau 15 ngày kể từ ngày đăng Công báo.
+
+Nơi nhận:
+
+- Như Điều 4;
+
+BỘ TRƯỞNG
+
+Trần Văn Tuấn
+
+CHƯƠNG TRÌNH KHUNG
+
+BỒI DƯỠNG NGẠCH CHUYÊN VIÊN
+
+(Ban hành kèm theo Quyết định số 08/2007/QĐ-BNV ngày 17 tháng 8 năm 2007 của Bộ trưởng Bộ Nội vụ)
+
+A. MỤC TIÊU
+
+1. Trang bị kiến thức quản lý nhà nước cho công chức.
+
+2. Rèn luyện kỹ năng thực thi công vụ.
+
+I. KHỐI KIẾN THỨC CHUNG
+
+a. Nhà nước và pháp luật.
+`
+
+func parseProgramme(t *testing.T) *law.Document {
+	t.Helper()
+	return mustParse(t, Input{OfficialNumber: "08/2007/QĐ-BNV", Content: programmeBody})
+}
+
+// The annex header a document sets in capitals is a header whether or not the
+// kind stands alone on the line. Until this was read, the programme underneath
+// was not skipped, which would at least have been visible. It was read as a
+// continuation of the last article of the decision that issued it.
+func TestParseAnnexKindLineWithAQualifier(t *testing.T) {
+	doc := parseProgramme(t)
+	annex := find(doc, doc.ID+":annex-1")
+	if annex == nil {
+		t.Fatal("CHƯƠNG TRÌNH KHUNG did not open an annex")
+	}
+	if annex.Heading != "CHƯƠNG TRÌNH KHUNG BỒI DƯỠNG NGẠCH CHUYÊN VIÊN" {
+		t.Errorf("annex heading = %q", annex.Heading)
+	}
+	four := find(doc, doc.ID+":article-4")
+	if four == nil {
+		t.Fatal("article 4 of the decision missing")
+	}
+	if strings.Contains(four.Text, "MỤC TIÊU") || strings.Contains(four.Text, "Trang bị kiến thức") {
+		t.Errorf("the programme landed on the decision's last article: %q", four.Text)
+	}
+	// The programme's own numbering is not the decision's, so none of it may
+	// become a clause of an article the decision wrote.
+	if c := find(doc, doc.ID+":article-4:clause-1"); c != nil {
+		t.Errorf("a line of the programme became a clause of article 4: %+v", c)
+	}
+}
+
+// An annex lettered its own way opens no provision, and a line that opens no
+// provision used to match no case at all and go nowhere.
+func TestAnAnnexKeepsTheTextThatOpensNoProvision(t *testing.T) {
+	doc := parseProgramme(t)
+	annex := find(doc, doc.ID+":annex-1")
+	if annex == nil {
+		t.Fatal("annex missing")
+	}
+	for _, want := range []string{
+		"A. MỤC TIÊU",
+		"1. Trang bị kiến thức quản lý nhà nước cho công chức.",
+		"2. Rèn luyện kỹ năng thực thi công vụ.",
+		"I. KHỐI KIẾN THỨC CHUNG",
+		"a. Nhà nước và pháp luật.",
+	} {
+		if !strings.Contains(annex.Text, want) {
+			t.Errorf("the annex lost %q, its text is %q", want, annex.Text)
+		}
+	}
+	if annex.TextHash == "" {
+		t.Error("the annex carries text and no hash for it")
+	}
+	// The text is on the annex and nowhere else. Two homes for one line is how
+	// a count of what the corpus holds stops meaning anything.
+	for i := range doc.Provisions {
+		p := &doc.Provisions[i]
+		if p.ID != annex.ID && strings.Contains(p.Text, "KHỐI KIẾN THỨC CHUNG") {
+			t.Errorf("%s also holds the programme's text", p.ID)
+		}
+	}
+}
+
+// The qualifier has to carry no lowercase letter. That is the whole of what
+// separates a header set in capitals from a sentence opening with the same
+// word, and a document says both.
+func TestAnnexKindLine(t *testing.T) {
+	opens := []string{
+		"QUY ĐỊNH",
+		"QUY ĐỊNH:",
+		"CHƯƠNG TRÌNH KHUNG",
+		"QUY CHẾ TỔ CHỨC VÀ HOẠT ĐỘNG",
+		"DANH MỤC I",
+		"HƯỚNG DẪN VỀ HỒ SƠ, THỦ TỤC",
+	}
+	for _, line := range opens {
+		if !annexKindLine.MatchString(line) {
+			t.Errorf("annexKindLine did not match %q", line)
+		}
+	}
+	shut := []string{
+		"QUY ĐỊNH này áp dụng cho mọi tổ chức",
+		"Quy định tại khoản 1 Điều 5 được sửa đổi",
+		"Theo QUY ĐỊNH",
+		"BAN HÀNH KÈM THEO",
+	}
+	for _, line := range shut {
+		if annexKindLine.MatchString(line) {
+			t.Errorf("annexKindLine matched %q, which opens no annex", line)
+		}
+	}
+}
+
 func TestParseDeterministic(t *testing.T) {
 	in := Input{OfficialNumber: "45/2019/QH14", Content: codeBody}
 	a := mustParse(t, in)
@@ -739,6 +879,7 @@ func TestNoDocumentEverNamesTwoProvisionsTheSame(t *testing.T) {
 		"sectioned": {"72/2025/NĐ-CP", sectionedBody},
 		"quoted":    {"01/2007/QH12", quotedBody},
 		"repeated":  {"07/2011/TT-BNV", repeatedBody},
+		"programme": {"08/2007/QĐ-BNV", programmeBody},
 	}
 	for name, b := range bodies {
 		t.Run(name, func(t *testing.T) {

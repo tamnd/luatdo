@@ -242,13 +242,22 @@ It used to count quotation marks as it passed them, which meant one stray mark a
 Marks are now paired over the whole body before the walk starts, so a quotation that never closes costs itself and nothing else.
 
 That fixes the amending laws and not the drafters.
-7,924 documents number one of their own provisions the same as an earlier one, 53,995 provisions in total, most often two adjacent points lettered the same and sometimes an annex that restarts at `Chương I`.
+7,730 documents number one of their own provisions the same as an earlier one, 51,056 provisions in total, most often two adjacent points lettered the same and sometimes an annex that restarts at `Chương I`.
 There is no identifier those provisions would both recognise, so the later ones carry their occurrence instead, and a reader who sees one knows the source repeated a label rather than that the parser invented one.
 
 ```text
 vn:law:2011:07-2011-tt-bnv:article-1:clause-1:point-a
 vn:law:2011:07-2011-tt-bnv:article-1:clause-1:point-a~2
 ```
+
+An annex opens with its kind on a line, and the drafters qualify that kind on the same line as often as they leave it standing alone: `CHƯƠNG TRÌNH KHUNG`, `QUY CHẾ TỔ CHỨC VÀ HOẠT ĐỘNG`.
+A header the walk does not read is worse than a document it skips, because the annexed instrument is not dropped, it is read as a continuation of whatever article of the parent decision came last.
+Reading the qualified form put 39,960 provisions under the annex that carries them across 1,084 documents, and it is the qualifier having no lowercase letter in it that tells a header set in capitals apart from a sentence opening with the same word.
+
+Not every annex numbers its parts the way the parent does.
+A training programme runs `A.` and `I.` and `1.` and `a.`, a table of administrative procedures repeats `1. Trình tự thực hiện` once per procedure, and neither is an article, a clause or a point.
+Those lines opened no provision and so went nowhere at all until the walk was given somewhere to put them, which is the annex itself: 14,719 annexes now carry text, 275 hold neither text nor a provision, and 5,758 provisions that had been read as clauses and points of the parent's last article are text on the annex they belong to instead.
+Reading that lettering as structure is a separate question and is not answered here, because inventing a hierarchy from marks the drafter never labelled as one is how the misfiling happened in the first place.
 
 ## Where definitions live
 
