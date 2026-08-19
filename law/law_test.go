@@ -1,6 +1,10 @@
 package law
 
-import "testing"
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+)
 
 func TestDocID(t *testing.T) {
 	cases := []struct {
@@ -198,6 +202,33 @@ func TestRomanToArabic(t *testing.T) {
 	for in, want := range cases {
 		if got := RomanToArabic(in); got != want {
 			t.Errorf("RomanToArabic(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestDocumentRoundTripsWhatTheSourceSaysAboutForce(t *testing.T) {
+	// The store writes a document as JSON and reads it back, so a field with no
+	// tag, or a tag that disagrees with the one that wrote the file, loses what
+	// the source said between one pass of the pipeline and the next.
+	before := Document{
+		ID: "vn:law:2010:46-2010-qh12", OfficialNumber: "46/2010/QH12",
+		EffectiveFrom: "01/01/2011", SignedOn: "16/06/2010",
+		ExpiredOn: "01/07/2024", ForceStatus: "Hết hiệu lực toàn bộ",
+	}
+	data, err := json.Marshal(before)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var after Document
+	if err := json.Unmarshal(data, &after); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if after.SignedOn != before.SignedOn || after.ExpiredOn != before.ExpiredOn || after.ForceStatus != before.ForceStatus {
+		t.Errorf("came back as signed %q, expired %q, status %q", after.SignedOn, after.ExpiredOn, after.ForceStatus)
+	}
+	for _, name := range []string{`"signed_on"`, `"expired_on"`, `"force_status"`} {
+		if !strings.Contains(string(data), name) {
+			t.Errorf("the file holds no %s field: %s", name, data)
 		}
 	}
 }

@@ -30,6 +30,11 @@ type Input struct {
 	SourceRef     string
 	SourceURL     string
 	EffectiveFrom string
+	// SignedOn, ExpiredOn and ForceStatus are what the source records about the
+	// life of the instrument. ForceStatus is kept in the source's own words.
+	SignedOn    string
+	ExpiredOn   string
+	ForceStatus string
 	// MetadataOnly marks a document whose text has not been downloaded. It
 	// still becomes a node, because the official citation graph points at it
 	// and an edge to a document that is not there is worse than a document
@@ -102,6 +107,9 @@ func Parse(in Input) (*law.Document, error) {
 		SourceURL:      in.SourceURL,
 		SourceHash:     store.HashBytes([]byte(in.Content)),
 		EffectiveFrom:  in.EffectiveFrom,
+		SignedOn:       in.SignedOn,
+		ExpiredOn:      in.ExpiredOn,
+		ForceStatus:    in.ForceStatus,
 		Status:         "parsed",
 	}
 	if in.MetadataOnly {
@@ -667,6 +675,9 @@ func Merge(existing, incoming *law.Document) *law.Document {
 	fill(&out.TitleEN, existing.TitleEN)
 	fill(&out.DocType, existing.DocType)
 	fill(&out.EffectiveFrom, existing.EffectiveFrom)
+	fill(&out.SignedOn, existing.SignedOn)
+	fill(&out.ExpiredOn, existing.ExpiredOn)
+	fill(&out.ForceStatus, existing.ForceStatus)
 	fill(&out.SourceURL, existing.SourceURL)
 	if len(out.Provisions) == 0 && len(existing.Provisions) > 0 {
 		// The incoming publication has no text and the one on disk does, so the

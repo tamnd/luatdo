@@ -13,20 +13,33 @@ import (
 
 // Document is one legal instrument in canonical form.
 type Document struct {
-	ID             string      `json:"id"`
-	OfficialNumber string      `json:"official_number"`
-	IssuingBody    string      `json:"issuing_body,omitempty"`
-	Title          string      `json:"title"`
-	TitleEN        string      `json:"title_en,omitempty"`
-	DocType        string      `json:"doc_type"` // constitution, code, law
-	EffectiveFrom  string      `json:"effective_from,omitempty"`
-	Source         string      `json:"source"`     // dataset name
-	SourceRef      string      `json:"source_ref"` // dataset revision
-	SourceURL      string      `json:"source_url,omitempty"`
-	SourceHash     string      `json:"source_hash"` // sha256 of the raw content
-	Status         string      `json:"status"`      // parsed or quarantined
-	Quarantine     string      `json:"quarantine,omitempty"`
-	Provisions     []Provision `json:"provisions,omitempty"`
+	ID             string `json:"id"`
+	OfficialNumber string `json:"official_number"`
+	IssuingBody    string `json:"issuing_body,omitempty"`
+	Title          string `json:"title"`
+	TitleEN        string `json:"title_en,omitempty"`
+	DocType        string `json:"doc_type"` // constitution, code, law
+	EffectiveFrom  string `json:"effective_from,omitempty"`
+	// SignedOn is the day the instrument was signed, and it is not the day it
+	// commenced. It is carried because a document with no commencement date has
+	// one of these and a reader deserves to see which of the two they have, and
+	// it is never promoted into a commencement date, because a date computed
+	// from another date cannot be told apart later from a date somebody read
+	// off the instrument.
+	SignedOn string `json:"signed_on,omitempty"`
+	// ExpiredOn is the day the instrument stopped being in force, and
+	// ForceStatus is the source's own record of what happened to it, kept in
+	// the words the source uses: Còn hiệu lực, Hết hiệu lực toàn bộ, Hết hiệu
+	// lực một phần and the rest. Neither is inferred from the other.
+	ExpiredOn   string      `json:"expired_on,omitempty"`
+	ForceStatus string      `json:"force_status,omitempty"`
+	Source      string      `json:"source"`     // dataset name
+	SourceRef   string      `json:"source_ref"` // dataset revision
+	SourceURL   string      `json:"source_url,omitempty"`
+	SourceHash  string      `json:"source_hash"` // sha256 of the raw content
+	Status      string      `json:"status"`      // parsed or quarantined
+	Quarantine  string      `json:"quarantine,omitempty"`
+	Provisions  []Provision `json:"provisions,omitempty"`
 }
 
 // Provision is one structural node: a chapter, section, article, clause, or point.

@@ -87,12 +87,9 @@ func Merge(ctx context.Context, target Target, in Input) error {
 
 	var docRows, componentRows, versionRows, containsRows, hasVersionRows, citesRows, amendsRows []map[string]any
 	for _, d := range docs {
-		docRows = append(docRows, map[string]any{
-			"id": d.ID, "official_number": d.OfficialNumber, "issuing_body": d.IssuingBody,
-			"title":    d.Title,
-			"title_en": d.TitleEN, "doc_type": d.DocType, "effective_from": d.EffectiveFrom,
-			"source": d.Source, "source_url": d.SourceURL, "status": d.Status,
-		})
+		row := docFields(d)
+		row["id"] = d.ID
+		docRows = append(docRows, row)
 	}
 	// The same walkers the CSV writer uses, so the two paths cannot disagree
 	// about which components a document has.
@@ -110,6 +107,7 @@ func Merge(ctx context.Context, target Target, in Input) error {
 		versionRows = append(versionRows, map[string]any{
 			"id": v.ID, "text": v.Text, "text_hash": v.TextHash,
 			"from_date": v.FromDate, "to_date": v.ToDate,
+			"caption": VersionCaption(v),
 		})
 		hasVersionRows = append(hasVersionRows, map[string]any{"from": v.ComponentID, "to": v.ID})
 		return nil

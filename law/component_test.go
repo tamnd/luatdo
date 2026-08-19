@@ -60,6 +60,80 @@ func TestSplitDatesVersionsFromTheDocument(t *testing.T) {
 	}
 }
 
+func TestSplitPutsBothEndsInAFormThatSorts(t *testing.T) {
+	doc := labourCode()
+	doc.EffectiveFrom = "01/01/2021"
+	doc.ExpiredOn = "01/06/2026"
+	doc.ForceStatus = "Hết hiệu lực toàn bộ"
+	_, versions := Split(doc)
+	if versions[0].FromDate != "2021-01-01" || versions[0].ToDate != "2026-06-01" {
+		t.Errorf("version runs %q to %q, want ISO on both ends", versions[0].FromDate, versions[0].ToDate)
+	}
+}
+
+func TestVersionEndTakesTheDateTheSourceGives(t *testing.T) {
+	doc := labourCode()
+	doc.ExpiredOn = "01/06/2026"
+	doc.ForceStatus = "Hết hiệu lực toàn bộ"
+	end, refused := VersionEnd(doc)
+	if end != "2026-06-01" || refused != "" {
+		t.Errorf("end = %q, refused = %q", end, refused)
+	}
+}
+
+func TestVersionEndRefusesNothingWhenThereIsNoDate(t *testing.T) {
+	// A document nobody has repealed has an open ended wording. There is no
+	// refusal to count here, because nothing was withheld.
+	doc := labourCode()
+	doc.ForceStatus = "Còn hiệu lực"
+	end, refused := VersionEnd(doc)
+	if end != "" || refused != "" {
+		t.Errorf("end = %q, refused = %q", end, refused)
+	}
+}
+
+func TestVersionEndRefusesAPartialExpiry(t *testing.T) {
+	for _, status := range []string{"Hết hiệu lực một phần", "Ngưng hiệu lực một phần"} {
+		doc := labourCode()
+		doc.ExpiredOn = "01/06/2026"
+		doc.ForceStatus = status
+		end, refused := VersionEnd(doc)
+		if end != "" || refused != EndRefusedPartial {
+			t.Errorf("%s: end = %q, refused = %q", status, end, refused)
+		}
+	}
+}
+
+func TestVersionEndRefusesABackwardInterval(t *testing.T) {
+	doc := labourCode()
+	doc.EffectiveFrom = "01/01/2021"
+	doc.ExpiredOn = "01/06/2019"
+	doc.ForceStatus = "Hết hiệu lực toàn bộ"
+	end, refused := VersionEnd(doc)
+	if end != "" || refused != EndRefusedBackward {
+		t.Errorf("end = %q, refused = %q", end, refused)
+	}
+	// The refusal is on the version, not on the document. What the source says
+	// stays where the source put it.
+	_, versions := Split(doc)
+	if versions[0].ToDate != "" {
+		t.Errorf("version ends %q, want no end at all", versions[0].ToDate)
+	}
+	if doc.ExpiredOn != "01/06/2019" {
+		t.Errorf("the document lost its own date, it now reads %q", doc.ExpiredOn)
+	}
+}
+
+func TestSigningDateNeverBecomesACommencementDate(t *testing.T) {
+	doc := labourCode()
+	doc.EffectiveFrom = ""
+	doc.SignedOn = "20/11/2019"
+	_, versions := Split(doc)
+	if versions[0].FromDate != "" {
+		t.Errorf("version starts %q, and the source only ever gave a signing date", versions[0].FromDate)
+	}
+}
+
 func TestTextVersionIDFollowsTheContent(t *testing.T) {
 	const component = "vn:law:2019:45-2019-qh14:article-94:clause-1"
 	first := TextVersionID(component, "9f2c4a1b7d3e5608aa11")

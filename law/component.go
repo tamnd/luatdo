@@ -115,6 +115,43 @@ func (c *Component) Renumber(number string) {
 	c.Number = number
 }
 
+// The force statuses the source records for a document whose provisions did not
+// all end together. A document level expiry date says nothing about which of
+// them did, so it is not pushed down onto every wording.
+const (
+	partlyExpired   = "Hết hiệu lực một phần"
+	partlySuspended = "Ngưng hiệu lực một phần"
+)
+
+// The reasons a document that carries an expiry date does not give its wordings
+// an end date. Each is a property of the source, so each is reported rather than
+// quietly dropped.
+const (
+	EndRefusedPartial  = "the source says only part of the document ended, and the document date does not say which part"
+	EndRefusedBackward = "the expiry date precedes the commencement date, so the interval runs backwards"
+)
+
+// VersionEnd is the day every wording of a document stopped being in force, in
+// ISO form, and the reason the source cannot support one when it cannot.
+//
+// A document with no expiry date at all is neither: there is nothing to refuse,
+// and an open ended version is the right reading of a document nobody has
+// repealed. The two other cases are refusals worth counting.
+func VersionEnd(d *Document) (end, refused string) {
+	to := ISODate(d.ExpiredOn)
+	if to == "" {
+		return "", ""
+	}
+	switch d.ForceStatus {
+	case partlyExpired, partlySuspended:
+		return "", EndRefusedPartial
+	}
+	if from := ISODate(d.EffectiveFrom); from != "" && to < from {
+		return "", EndRefusedBackward
+	}
+	return to, ""
+}
+
 // Split separates a document's provisions into components and text versions.
 //
 // A provision with no text yields no version rather than an empty one. A
@@ -124,6 +161,11 @@ func (c *Component) Renumber(number string) {
 func Split(doc *Document) ([]Component, []TextVersion) {
 	components := make([]Component, 0, len(doc.Provisions))
 	var versions []TextVersion
+	// Both ends are ISO here whatever the source wrote, because a date is on a
+	// version so that something can be compared to it, and dd/mm/yyyy compares
+	// as a string in the order the day happens to sort.
+	from := ISODate(doc.EffectiveFrom)
+	to, _ := VersionEnd(doc)
 	for i := range doc.Provisions {
 		p := &doc.Provisions[i]
 		components = append(components, p.Component(doc.ID))
@@ -136,7 +178,8 @@ func Split(doc *Document) ([]Component, []TextVersion) {
 			DocID:       doc.ID,
 			Text:        p.Text,
 			TextHash:    p.TextHash,
-			FromDate:    doc.EffectiveFrom,
+			FromDate:    from,
+			ToDate:      to,
 		})
 	}
 	return components, versions

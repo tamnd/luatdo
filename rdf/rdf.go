@@ -361,7 +361,8 @@ func literal(v string, c column, name string) string {
 // should stay a string.
 func dateish(name string) bool {
 	return strings.HasSuffix(name, "_date") || strings.HasSuffix(name, "_from") ||
-		strings.HasSuffix(name, "_at") || name == "date" || name == "effective_from"
+		strings.HasSuffix(name, "_at") || strings.HasSuffix(name, "_on") ||
+		name == "date" || name == "effective_from"
 }
 
 // quote escapes a literal for N-Triples. The text is Vietnamese legal prose and

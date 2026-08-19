@@ -148,11 +148,11 @@ func Export(dir string, in Input) error {
 			return err
 		}
 	}
-	if err := writeCSV(filepath.Join(dir, "documents.csv"),
-		[]string{"id:ID", "official_number", "issuing_body", "title", "title_en", "doc_type", "effective_from", "source", "source_url", "status", ":LABEL"},
+	if err := writeCSV(filepath.Join(dir, "documents.csv"), nodeHeader(docColumns, nil),
 		func(w *csv.Writer) error {
 			for _, d := range docs {
-				if err := w.Write([]string{d.ID, d.OfficialNumber, d.IssuingBody, d.Title, d.TitleEN, d.DocType, d.EffectiveFrom, d.Source, d.SourceURL, d.Status, "Document"}); err != nil {
+				row := nodeValues(docFields(d), docColumns)
+				if err := w.Write(append(append([]string{d.ID}, row...), "Document")); err != nil {
 					return err
 				}
 			}
@@ -170,10 +170,10 @@ func Export(dir string, in Input) error {
 		return err
 	}
 	if err := writeCSV(filepath.Join(dir, "text_versions.csv"),
-		[]string{"id:ID", "text", "text_hash", "from_date", "to_date", ":LABEL"},
+		[]string{"id:ID", "text", "text_hash", "from_date", "to_date", "caption", ":LABEL"},
 		func(w *csv.Writer) error {
 			return eachVersion(docs, func(_ *law.Document, v *law.TextVersion) error {
-				return w.Write([]string{v.ID, v.Text, v.TextHash, v.FromDate, v.ToDate, "TextVersion"})
+				return w.Write([]string{v.ID, v.Text, v.TextHash, v.FromDate, v.ToDate, VersionCaption(v), "TextVersion"})
 			})
 		}); err != nil {
 		return err
@@ -925,6 +925,34 @@ func eachNormClass(r *norm.Record, classes map[string]bool, visit func(classID, 
 	return nil
 }
 
+// docFields flattens one document into the properties a Document node carries,
+// and docColumns is the CSV column order. Both writers call them, for the same
+// reason normFields exists: the CSV columns and the Bolt properties drifted
+// apart once already.
+//
+// The two dates come out ISO whatever the source wrote, because a graph
+// compares dates as text and 17/08/2007 sorts before 01/06/2016. A date in
+// neither form comes out empty rather than guessed. force_status is left in the
+// source's own words, because it is a record of what the source says rather
+// than a category this project invented.
+func docFields(d *law.Document) map[string]any {
+	return map[string]any{
+		"official_number": d.OfficialNumber, "issuing_body": d.IssuingBody,
+		"title": d.Title, "title_en": d.TitleEN, "doc_type": d.DocType,
+		"effective_from": law.ISODate(d.EffectiveFrom),
+		"signed_on":      law.ISODate(d.SignedOn),
+		"expired_on":     law.ISODate(d.ExpiredOn),
+		"force_status":   d.ForceStatus,
+		"source":         d.Source, "source_url": d.SourceURL, "status": d.Status,
+	}
+}
+
+var docColumns = []string{
+	"official_number", "issuing_body", "title", "title_en", "doc_type",
+	"effective_from", "signed_on", "expired_on", "force_status",
+	"source", "source_url", "status",
+}
+
 // normFields flattens one statement into the scalar properties a Norm node
 // carries. Both writers call it, so the CSV columns and the Bolt properties
 // cannot drift apart, which they did the last time the schema moved.
@@ -937,7 +965,7 @@ func normFields(r *norm.Record) map[string]any {
 		return ref.Text
 	}
 	out := map[string]any{
-		"norm_type": s.Type, "modality": s.Modality,
+		"norm_type": s.Type, "modality": s.Modality, "caption": normCaption(s),
 		"bearer": text(s.Bearer), "counterparty": text(s.Counterparty),
 		"action": s.Action.Text, "object": text(s.Object),
 		"procedure_id": s.ProcedureID, "step": s.Step,
@@ -962,7 +990,7 @@ func normFields(r *norm.Record) map[string]any {
 // The header the export writes is built from it, so a field added to normFields
 // and forgotten here shows up as a missing column rather than a shifted one.
 var normColumns = []string{
-	"norm_type", "modality", "bearer", "counterparty", "action", "object",
+	"caption", "norm_type", "modality", "bearer", "counterparty", "action", "object",
 	"deadline_text", "deadline_value", "deadline_unit", "deadline_calendar",
 	"deadline_anchor", "deadline_anchor_at", "procedure_id", "step",
 	"evidence_quote", "evidence_start", "evidence_end", "confidence",
