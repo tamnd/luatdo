@@ -70,7 +70,7 @@ node.TextVersion {
   border-color: #A5ABB6;
   text-color-internal: #2A2C34;
   diameter: 50px;
-  caption: '{from_date}';
+  caption: '{caption}';
 }
 
 node.Term {
@@ -98,7 +98,7 @@ node.Norm {
   color: #F79767;
   border-color: #F36924;
   diameter: 65px;
-  caption: '{action}';
+  caption: '{caption}';
 }
 
 node.Condition {

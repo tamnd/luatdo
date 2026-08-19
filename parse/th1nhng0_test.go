@@ -25,7 +25,8 @@ func writeParquet[T any](t *testing.T, revisionDir, config string, rows []T) {
 // number has no year and so can never have a stable identifier.
 func meta() []th1nhng0Meta {
 	return []th1nhng0Meta{
-		{ID: "1001", Title: "Bộ luật Lao động", SoKyHieu: "45/2019/QH14", LoaiVanBan: "Bộ luật", NgayHieuLuc: "01/01/2021"},
+		{ID: "1001", Title: "Bộ luật Lao động", SoKyHieu: "45/2019/QH14", LoaiVanBan: "Bộ luật", NgayHieuLuc: "01/01/2021",
+			NgayBanHanh: "20/11/2019", NgayHetHieu: "01/07/2026", TinhTrang: "Hết hiệu lực toàn bộ"},
 		{ID: "1002", Title: "Luật Doanh nghiệp", SoKyHieu: "59/2020/QH14", LoaiVanBan: "Luật", NgayHieuLuc: "01/01/2021"},
 		{ID: "1003", Title: "Công văn không số", SoKyHieu: "khong-so", LoaiVanBan: "Công văn"},
 	}
@@ -58,6 +59,9 @@ func TestEachTh1nhng0MetadataOnly(t *testing.T) {
 	}
 	if in.Title != "Bộ luật Lao động" || in.DocType != "Bộ luật" || in.EffectiveFrom != "01/01/2021" {
 		t.Errorf("input = %+v", in)
+	}
+	if in.SignedOn != "20/11/2019" || in.ExpiredOn != "01/07/2026" || in.ForceStatus != "Hết hiệu lực toàn bộ" {
+		t.Errorf("what the source says about force did not come through: %+v", in)
 	}
 	if in.Source != "th1nhng0" || in.SourceRef != "abc123" {
 		t.Errorf("provenance = %s at %s", in.Source, in.SourceRef)

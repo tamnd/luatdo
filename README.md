@@ -578,6 +578,23 @@ MATCH (c:Component {id:'vn:law:2019:45-2019-qh14:article-94'})-[:HAS_VERSION]->(
 RETURN v.from_date, v.to_date, v.text ORDER BY v.from_date
 ```
 
+Every date in the graph is written the way a graph compares dates.
+The source writes 17/08/2007, which sorts by the day of the month, and 126,157 documents and 3,660,302 wordings went into the projection in that form, so the query above ordered a provision's history by the day of the month it happened to fall on.
+They are ISO now, and a date in neither form goes in empty rather than guessed.
+
+The source also records what became of an instrument, which the projection had been throwing away.
+128,094 documents carry a force status in the words the source uses, Còn hiệu lực and Hết hiệu lực toàn bộ and the rest, 67,523 carry the day they stopped being in force, and 1,896,948 wordings now have an end date where every wording in the graph had run open ended.
+The status is not translated into an invented English enum, because it is a record of what the source says rather than a judgement this project is entitled to make.
+
+Where the source will not support an end date, it is refused and counted rather than guessed.
+27 documents are recorded as only partly expired, and a date on the whole document does not say which part ended.
+99 have an expiry date earlier than the commencement date, so the interval runs backwards.
+The signing date is carried under its own name and is never promoted into a commencement date: 1,937 documents have no commencement date at all and every one of them has a signing date, and a date computed from another date cannot be told apart later from a date somebody read off the instrument.
+
+The last of that shows up in the browser.
+21,333 wordings had no date to be captioned with and drew as a circle with nothing written in it, which nobody can tell apart from a rendering fault, so they say so in as many words instead.
+Two norms of 849 state a definition rather than an action, and are captioned with what they define.
+
 ## What changed and when
 
 The section above says a component has wordings.

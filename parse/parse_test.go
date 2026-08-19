@@ -949,6 +949,28 @@ func TestMergeDoesNotLetAMetadataRowDemoteAParsedDocument(t *testing.T) {
 	}
 }
 
+func TestMergeCarriesWhatTheSourceSaysAboutForce(t *testing.T) {
+	// Only one of the two datasets records what became of an instrument, so a
+	// merge that dropped it would leave every wording open ended for want of a
+	// column one publication happens not to have.
+	parsed := &law.Document{
+		ID: "vn:law:2010:46-2010-qh12", Status: "parsed", Source: "uts_vlc",
+		Provisions: []law.Provision{{ID: "vn:law:2010:46-2010-qh12:article-1", Kind: "article", Number: "1"}},
+	}
+	metadataOnly := &law.Document{
+		ID: "vn:law:2010:46-2010-qh12", Status: "metadata", Source: "th1nhng0",
+		SignedOn: "16/06/2010", ExpiredOn: "01/07/2024", ForceStatus: "Hết hiệu lực toàn bộ",
+	}
+
+	got := Merge(parsed, metadataOnly)
+	if got.SignedOn != "16/06/2010" || got.ExpiredOn != "01/07/2024" || got.ForceStatus != "Hết hiệu lực toàn bộ" {
+		t.Errorf("signed %q, expired %q, status %q", got.SignedOn, got.ExpiredOn, got.ForceStatus)
+	}
+	if got.EffectiveFrom != "" {
+		t.Errorf("neither publication gave a commencement date, got %q", got.EffectiveFrom)
+	}
+}
+
 func TestMergeOfNothingIsTheOtherOne(t *testing.T) {
 	d := &law.Document{ID: "x"}
 	if Merge(nil, d) != d || Merge(d, nil) != d {

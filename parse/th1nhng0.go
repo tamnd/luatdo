@@ -20,6 +20,9 @@ type th1nhng0Meta struct {
 	SoKyHieu    string `parquet:"so_ky_hieu"`
 	LoaiVanBan  string `parquet:"loai_van_ban"`
 	NgayHieuLuc string `parquet:"ngay_co_hieu_luc"`
+	NgayBanHanh string `parquet:"ngay_ban_hanh"`
+	NgayHetHieu string `parquet:"ngay_het_hieu_luc"`
+	TinhTrang   string `parquet:"tinh_trang_hieu_luc"`
 	CoQuan      string `parquet:"co_quan_ban_hanh"`
 }
 
@@ -87,6 +90,9 @@ func EachTh1nhng0(revisionDir, revision string, visit func(Input) error) (Th1nhn
 			SourceRef:      revision,
 			SourceURL:      "https://vbpl.vn/pages/portal.aspx?ItemID=" + m.ID,
 			EffectiveFrom:  m.NgayHieuLuc,
+			SignedOn:       m.NgayBanHanh,
+			ExpiredOn:      m.NgayHetHieu,
+			ForceStatus:    m.TinhTrang,
 			MetadataOnly:   content == "",
 		}
 	}

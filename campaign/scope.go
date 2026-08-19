@@ -137,7 +137,10 @@ func (sc Scope) Documents(records []subject.Record, docs []*law.Document) map[st
 		if sc.excluded(doc.IssuingBody) {
 			continue
 		}
-		if sc.EffectiveFrom != "" && doc.EffectiveFrom > sc.EffectiveFrom {
+		// ISO on both sides. The scope is written ISO and the corpus is written
+		// dd/mm/yyyy, and comparing the two as text put every document signed
+		// after the first of the month outside a cutoff it was inside.
+		if sc.EffectiveFrom != "" && law.ISODate(doc.EffectiveFrom) > sc.EffectiveFrom {
 			continue
 		}
 		out[r.DocID] = true
