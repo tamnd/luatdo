@@ -206,13 +206,33 @@ type parser struct {
 	clause  int
 	point   int
 
-	// quote is how deep the walk is inside a quotation. An amending law quotes
-	// the text it enacts, and everything inside the quotation belongs to the
-	// instruction that opened it rather than to this document's own structure.
-	quote int
+	// used counts how many provisions have already claimed each identifier, so
+	// the second one to claim it can be told from the first.
+	used map[string]int
 }
 
+// add appends a provision, giving it the next position and an identifier no
+// other provision in this document has.
+//
+// Uniqueness is enforced here rather than checked afterwards because every
+// later provision hangs off this one: a clause of the second article numbered
+// 4 has to be a clause of that article and not of the first, and it gets that
+// for free by reading the identifier back out of the parent.
+//
+// The instrument itself is what makes this necessary. The parser numbers
+// nothing; it reads the number the drafter wrote, and drafters repeat them.
+// Sometimes it is a typo, two adjacent points lettered the same. Sometimes it
+// is a whole second structure the parser did not recognise as separate, an
+// annex restarting at Chương I. Either way the honest identifier for the
+// second thing is not the first thing's.
 func (p *parser) add(prov law.Provision) int {
+	if p.used == nil {
+		p.used = map[string]int{}
+	}
+	p.used[prov.ID]++
+	if n := p.used[prov.ID]; n > 1 {
+		prov.ID = law.RepeatID(prov.ID, n)
+	}
 	prov.Position = len(p.provisions) + 1
 	p.provisions = append(p.provisions, prov)
 	return len(p.provisions) - 1
@@ -418,32 +438,17 @@ func TrimMarker(kind, number, text string) string {
 // header. Everything between the two is discarded, which is what the earlier
 // version did to the annex as well.
 func parseBody(docID, body string) []law.Provision {
-	provisions, balanced := walkBody(docID, body, true)
-	if balanced {
-		return provisions
-	}
-	// A quotation that never closes would swallow the rest of the document into
-	// one provision, which is worse than reading the quoted text as structure.
-	// So an unbalanced document is walked again with the rule switched off, and
-	// gets exactly the parse it got before the rule existed.
-	provisions, _ = walkBody(docID, body, false)
-	return provisions
-}
-
-// walkBody walks the body and reports whether every quotation it opened closed
-// again. quoted switches the quotation rule off for the second attempt.
-func walkBody(docID, body string, quoted bool) ([]law.Provision, bool) {
 	p := &parser{root: docID, annex: -1, chapter: -1, section: -1, article: -1, clause: -1, point: -1}
 
 	lines := bodyLines(body)
+	quoted := quotedLines(lines)
 	sawArticle, tail := false, false
 	for i := 0; i < len(lines); i++ {
 		line := lines[i]
-		if quoted && p.quote > 0 {
+		if quoted[i] {
 			// Inside a quotation. "Điều 73." here is the text being enacted
 			// elsewhere, not an article of this instrument.
 			p.appendText(p.deepest(), line)
-			p.quote = quoteDepth(p.quote, line)
 			continue
 		}
 		if sawArticle {
@@ -533,9 +538,6 @@ func walkBody(docID, body string, quoted bool) ([]law.Provision, bool) {
 		case p.chapter >= 0 && p.article < 0:
 			addHeading(p.at(p.chapter), line)
 		}
-		if quoted {
-			p.quote = quoteDepth(p.quote, line)
-		}
 	}
 
 	for i := range p.provisions {
@@ -543,34 +545,58 @@ func walkBody(docID, body string, quoted bool) ([]law.Provision, bool) {
 			p.provisions[i].TextHash = store.HashBytes([]byte(p.provisions[i].Text))
 		}
 	}
-	return p.provisions, p.quote == 0
+	return p.provisions
 }
 
-// quoteDepth applies one line's quotation marks to the depth carried into it.
+// quotedLines marks each line that sits inside a quotation opened on an earlier
+// line. The line that opens a quotation is not marked, because the walk still
+// has to read the instruction that line belongs to, and the line that closes
+// one is, because the closing mark comes after the last of the quoted text.
 //
-// The corpus mixes the typographic pair with the ASCII mark, sometimes in the
-// same quotation: the 2007 anti corruption amendment opens both of its quoted
+// Marks are paired over the whole body before the walk starts rather than
+// counted as the walk passes them, and that is the difference between one bad
+// mark costing one quotation and one bad mark costing a document. The customs
+// amendment 42/2005/QH11 opens and closes all 24 of its quotations and carries
+// one loose ASCII mark besides. Under a running count that one mark left the
+// document unbalanced, the walk was thrown away, and the walk that replaced it
+// read the text of every article being amended as structure of the amending
+// law: 95 provisions under 46 identifiers, twelve of them sharing one.
+//
+// The corpus mixes the typographic pair with the ASCII mark, sometimes inside
+// one quotation: the 2007 anti corruption amendment opens both of its quoted
 // articles with " and closes one with ” and the other with ". So the two
-// directed marks count as themselves and the ASCII mark counts as whichever
-// one is due next.
-func quoteDepth(depth int, line string) int {
-	for _, r := range line {
-		switch r {
-		case '\u201c':
-			depth++
-		case '\u201d':
-			if depth > 0 {
-				depth--
-			}
-		case '"':
-			if depth > 0 {
-				depth--
-			} else {
-				depth++
+// directed marks pair as themselves and the ASCII mark closes a quotation when
+// one is open and opens one when none is. An opening mark that never finds a
+// close quotes nothing at all, which is the whole repair.
+func quotedLines(lines []string) []bool {
+	inside := make([]bool, len(lines))
+	var open []int
+	shut := func(end int) {
+		start := open[len(open)-1]
+		open = open[:len(open)-1]
+		for i := start + 1; i <= end; i++ {
+			inside[i] = true
+		}
+	}
+	for i, line := range lines {
+		for _, r := range line {
+			switch r {
+			case '\u201c':
+				open = append(open, i)
+			case '\u201d':
+				if len(open) > 0 {
+					shut(i)
+				}
+			case '"':
+				if len(open) > 0 {
+					shut(i)
+				} else {
+					open = append(open, i)
+				}
 			}
 		}
 	}
-	return depth
+	return inside
 }
 
 // deepest is the provision an unstructured line belongs to: the innermost one

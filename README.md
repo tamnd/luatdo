@@ -236,6 +236,20 @@ A number issued by a province is not: every province issues its own `01/2024/QĐ
 vn:law:2024:01-2024-qd-ubnd:ubnd-tinh-long-an
 ```
 
+No identifier ever names two provisions, and that takes work because the instruments do not cooperate.
+An amending law quotes the article it enacts, and the quoted text is full of lines that look exactly like structure, so the walk has to know it is inside a quotation.
+It used to count quotation marks as it passed them, which meant one stray mark anywhere in a document changed the reading of everything after it: the 2005 customs amendment opens and closes all 24 of its quotations and carries one loose ASCII mark besides, and that one mark turned 27 provisions into 95 under 46 identifiers, twelve of them sharing one.
+Marks are now paired over the whole body before the walk starts, so a quotation that never closes costs itself and nothing else.
+
+That fixes the amending laws and not the drafters.
+7,924 documents number one of their own provisions the same as an earlier one, 53,995 provisions in total, most often two adjacent points lettered the same and sometimes an annex that restarts at `Chương I`.
+There is no identifier those provisions would both recognise, so the later ones carry their occurrence instead, and a reader who sees one knows the source repeated a label rather than that the parser invented one.
+
+```text
+vn:law:2011:07-2011-tt-bnv:article-1:clause-1:point-a
+vn:law:2011:07-2011-tt-bnv:article-1:clause-1:point-a~2
+```
+
 ## Where definitions live
 
 A Vietnamese law states its vocabulary in one article, usually `Điều 3. Giải thích từ ngữ`, and usually under a sentence saying which instrument that vocabulary belongs to.

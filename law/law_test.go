@@ -136,6 +136,36 @@ func TestNumberSegment(t *testing.T) {
 	}
 }
 
+func TestRepeatIDIsTellableApartAndPortable(t *testing.T) {
+	first := ProvisionID("vn:law:2011:07-2011-tt-bnv:article-1:clause-1", "point", "a")
+	second := RepeatID(first, 2)
+	if second == first {
+		t.Fatal("the second occurrence has the first one's identifier")
+	}
+	if Repeated(first) {
+		t.Errorf("%q is the number the drafter wrote and is not a repeat", first)
+	}
+	if !Repeated(second) {
+		t.Errorf("%q is the second thing to claim that number and does not say so", second)
+	}
+	// The index has to survive the trip to disk, because the artifact a pass
+	// writes for a provision is named after the provision.
+	if a, b := FileName(first), FileName(second); a == b {
+		t.Errorf("both occurrences write to %q, so one extraction overwrites the other", a)
+	}
+	// A repeat of a repeat counts on rather than nesting.
+	if got := RepeatID(first, 3); got != first+"~3" {
+		t.Errorf("RepeatID(%q, 3) = %q", first, got)
+	}
+	// A clause of a second Điều 3 carries the index its article was given, and
+	// its own number is not repeated. Counting it as one turns 3,064 articles a
+	// drafter numbered twice into 28,604 provisions that look mislabelled.
+	child := RepeatID("vn:law:2011:07-2011-tt-bnv:article-3", 2) + ":clause-1"
+	if Repeated(child) {
+		t.Errorf("%q inherits an index rather than repeating a number", child)
+	}
+}
+
 func TestFileName(t *testing.T) {
 	got := FileName("vn:law:2019:45-2019-qh14")
 	want := "vn_law_2019_45-2019-qh14.json"

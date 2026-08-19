@@ -145,6 +145,36 @@ func ProvisionID(parent, kind, number string) string {
 	return parent + ":" + kind + "-" + NumberSegment(number)
 }
 
+// repeat separates a structural segment from the occurrence index that tells
+// two provisions apart when the instrument numbers them the same. It is a
+// character no structural number contains and no file system or IRI objects
+// to, and it reads as what it is: an identifier the drafter did not give.
+const repeat = "~"
+
+// RepeatID is the identifier of the nth thing in one document to claim a
+// number, counting from two. RepeatID("...:point-d", 2) is "...:point-d~2".
+//
+// A document that numbers two of its points d is not a document this can
+// parse into two identifiers the drafter would recognise, and there is no
+// third option: either one identifier answers for both provisions, which is
+// the defect this exists to stop, or the second occurrence says out loud that
+// it is the second. The index is the provision's place in the document, so it
+// is as structural and as reproducible as the number beside it.
+func RepeatID(id string, n int) string {
+	return id + repeat + fmt.Sprintf("%d", n)
+}
+
+// Repeated reports whether an identifier names a provision whose own number the
+// document had already used.
+//
+// Only the last segment is read. A clause of a second Điều 3 carries the index
+// its article was given and its own number is not repeated at all, so counting
+// every identifier with an index in it counts the children of one bad article
+// as if the drafter had numbered each of them twice.
+func Repeated(id string) bool {
+	return strings.Contains(id[strings.LastIndex(id, ":")+1:], repeat)
+}
+
 // telex spells the seven modified letters of the Vietnamese alphabet the way
 // every Vietnamese typist spells them on an ASCII keyboard. Tone marks are not
 // in the table because a structural number never carries one.
