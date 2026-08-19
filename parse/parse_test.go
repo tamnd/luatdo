@@ -569,36 +569,192 @@ func TestParseKeepsQuotedTextInsideTheInstruction(t *testing.T) {
 	}
 }
 
-func TestParseFallsBackWhenAQuotationNeverCloses(t *testing.T) {
+func TestAQuotationThatNeverClosesCostsOnlyItself(t *testing.T) {
 	body := strings.Replace(quotedBody, `1. Quốc hội giám sát công tác phòng, chống tham nhũng trong phạm vi cả nước."`,
 		"1. Quốc hội giám sát công tác phòng, chống tham nhũng trong phạm vi cả nước.", 1)
 	doc := mustParse(t, Input{OfficialNumber: "01/2007/QH12", Content: body})
+	base := "vn:law:2007:01-2007-qh12"
 
-	// With the quotation left open the rule would swallow the rest of the
-	// document, so the walk runs again without it and article 2 survives.
-	if find(doc, "vn:law:2007:01-2007-qh12:article-2") == nil {
+	// The second instruction's quotation is the one left open, so it quotes
+	// nothing and the rest of the document is read as it always was.
+	if find(doc, base+":article-2") == nil {
 		t.Error("an unbalanced quotation swallowed the articles after it")
+	}
+	// The first instruction's quotation closed, and it is still honoured. This
+	// is the whole difference: one bad mark used to cost the document.
+	clause1 := find(doc, base+":article-1:clause-1")
+	if clause1 == nil {
+		t.Fatal("the first instruction is missing")
+	}
+	if !strings.Contains(clause1.Text, "Thủ tướng Chính phủ") {
+		t.Errorf("the quotation that did close lost its text:\n%s", clause1.Text)
+	}
+	if find(doc, base+":article-73") != nil {
+		t.Error("a quotation that closed was read as structure because a later one did not")
 	}
 }
 
-func TestQuoteDepth(t *testing.T) {
-	cases := []struct {
-		in   int
-		line string
-		want int
-	}{
-		{0, `"Điều 73. Mở ngoặc`, 1},
-		{1, `nội dung`, 1},
-		{1, `hết.”`, 0},
-		{1, `hết."`, 0},
-		{0, `“mở” và đóng trong một dòng`, 0},
-		// A stray closing mark with nothing open is not a negative depth.
-		{0, `kết thúc”`, 0},
+func TestQuotedLines(t *testing.T) {
+	lines := []string{
+		`1. Điều 73 được sửa đổi như sau:`,
+		`"Điều 73. Ban chỉ đạo`,
+		`1. Ban chỉ đạo trung ương.”`,
+		`2. Điều 74 được sửa đổi như sau:`,
+		`“Điều 74. Giám sát`,
+		`1. Quốc hội giám sát.`,
+		`Điều 2`,
 	}
-	for _, c := range cases {
-		if got := quoteDepth(c.in, c.line); got != c.want {
-			t.Errorf("quoteDepth(%d, %q) = %d, want %d", c.in, c.line, got, c.want)
+	got := quotedLines(lines)
+	// Lines 2 and 3 sit inside the quotation that closed. The quotation opened
+	// on line 5 never closes, so nothing after it is quoted and article 2 is
+	// still this law's own.
+	want := []bool{false, false, true, false, false, false, false}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("line %d %q: quoted %v, want %v", i, lines[i], got[i], want[i])
 		}
+	}
+}
+
+func TestQuotedLinesPairsNestedAndSameLineMarks(t *testing.T) {
+	lines := []string{
+		`mở “ ngoài`,
+		`mở “ trong`,
+		`đóng ” trong`,
+		`đóng ” ngoài`,
+		`“mở và đóng” trên một dòng`,
+		`kết thúc ” không mở gì`,
+	}
+	got := quotedLines(lines)
+	want := []bool{false, true, true, true, false, false}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("line %d %q: quoted %v, want %v", i, lines[i], got[i], want[i])
+		}
+	}
+}
+
+// The corpus has 1,775 documents that repeat exactly one number and 170 that
+// repeat more than fifty, and the ones that repeat a point letter are usually
+// two adjacent points the drafter lettered the same.
+const repeatedBody = `**Số hiệu:** 07/2011/TT-BNV
+
+---
+
+Số: 07/2011/TT-BNV
+
+THÔNG TƯ
+
+Điều 1. Phạm vi điều chỉnh
+
+Thông tư này quy định về hồ sơ.
+
+1. Hồ sơ gồm có:
+
+a) Đơn đề nghị;
+
+a) Bản sao giấy tờ tùy thân.
+
+Điều 2. Hiệu lực
+
+Thông tư này có hiệu lực từ ngày 01 tháng 01 năm 2012.
+`
+
+func TestARepeatedNumberGetsItsOwnIdentifier(t *testing.T) {
+	doc := mustParse(t, Input{OfficialNumber: "07/2011/TT-BNV", Content: repeatedBody})
+	base := "vn:law:2011:07-2011-tt-bnv:article-1:clause-1"
+
+	seen := map[string]int{}
+	for i := range doc.Provisions {
+		seen[doc.Provisions[i].ID]++
+	}
+	for id, n := range seen {
+		if n > 1 {
+			t.Errorf("%s was written %d times, so one occurrence answers for both", id, n)
+		}
+	}
+
+	first := find(doc, base+":point-a")
+	second := find(doc, base+":point-a~2")
+	if first == nil || second == nil {
+		t.Fatalf("both points lettered a must survive: first %v second %v", first != nil, second != nil)
+	}
+	if !strings.Contains(first.Text, "Đơn đề nghị") {
+		t.Errorf("the first point a lost its text: %q", first.Text)
+	}
+	// The text of the second point is the whole reason not to drop it. Under
+	// the old parser it overwrote the first one everywhere downstream.
+	if !strings.Contains(second.Text, "Bản sao giấy tờ") {
+		t.Errorf("the second point a lost its text: %q", second.Text)
+	}
+	if second.ParentID != first.ParentID {
+		t.Errorf("the two points a belong to one clause: %q and %q", first.ParentID, second.ParentID)
+	}
+	if !law.Repeated(second.ID) || law.Repeated(first.ID) {
+		t.Errorf("only the second occurrence is a repeat: %q, %q", first.ID, second.ID)
+	}
+}
+
+func TestARepeatedNumberTakesItsChildrenWithIt(t *testing.T) {
+	// A document that opens Điều 3 twice is usually an annex the walk did not
+	// recognise, so the second article has a full set of clauses of its own and
+	// every one of them would land on the first article without this.
+	body := "**Số hiệu:** 07/2011/TT-BNV\n\n---\n\nSố: 07/2011/TT-BNV\n\nTHÔNG TƯ\n\n" +
+		"Điều 3. Trách nhiệm\n\n1. Bộ trưởng chịu trách nhiệm.\n\n" +
+		"Điều 4. Hiệu lực\n\nThông tư này có hiệu lực.\n\n" +
+		"Điều 3. Tổ chức thực hiện\n\n1. Thủ trưởng đơn vị tổ chức thực hiện.\n"
+	doc := mustParse(t, Input{OfficialNumber: "07/2011/TT-BNV", Content: body})
+	base := "vn:law:2011:07-2011-tt-bnv"
+
+	second := find(doc, base+":article-3~2")
+	if second == nil {
+		t.Fatal("the second article 3 is missing")
+	}
+	clause := find(doc, base+":article-3~2:clause-1")
+	if clause == nil {
+		t.Fatal("the second article 3 did not keep its own clause")
+	}
+	if !strings.Contains(clause.Text, "Thủ trưởng đơn vị") {
+		t.Errorf("the second article's clause 1 carries the first article's text: %q", clause.Text)
+	}
+	if first := find(doc, base+":article-3:clause-1"); first == nil ||
+		!strings.Contains(first.Text, "Bộ trưởng") {
+		t.Errorf("the first article's clause 1 was overwritten: %+v", first)
+	}
+}
+
+// This is the guarantee, stated once over every shape the package knows about,
+// rather than an assertion repeated inside each test that happens to think of
+// it. An identifier that names two provisions answers a query with a
+// neighbour's text while looking exactly like a correct answer, and the ways to
+// produce one are not a list anybody can finish: a quotation read as structure,
+// an annex that restarts its numbering, a drafter who letters two points the
+// same. So the walk is required to come out the other side with one identifier
+// per provision whatever went in.
+func TestNoDocumentEverNamesTwoProvisionsTheSame(t *testing.T) {
+	bodies := map[string]struct{ number, content string }{
+		"code":      {"45/2019/QH14", codeBody},
+		"amending":  {"26/2012/QH13", amendingBody},
+		"decision":  {"01/2019/QĐ-UBND", decisionBody},
+		"sectioned": {"72/2025/NĐ-CP", sectionedBody},
+		"quoted":    {"01/2007/QH12", quotedBody},
+		"repeated":  {"07/2011/TT-BNV", repeatedBody},
+	}
+	for name, b := range bodies {
+		t.Run(name, func(t *testing.T) {
+			doc, err := Parse(Input{OfficialNumber: b.number, IssuingBody: "Ủy ban nhân dân tỉnh Bắc Giang", Content: b.content})
+			if err != nil {
+				t.Fatalf("Parse: %v", err)
+			}
+			seen := map[string]bool{}
+			for i := range doc.Provisions {
+				id := doc.Provisions[i].ID
+				if seen[id] {
+					t.Errorf("%s names more than one provision", id)
+				}
+				seen[id] = true
+			}
+		})
 	}
 }
 

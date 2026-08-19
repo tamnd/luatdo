@@ -117,6 +117,12 @@ func cmdParse(args []string) error {
 
 	only := fs.Arg(0)
 	parsed, quarantined, metadata, skipped, merged := 0, 0, 0, 0, 0
+	// Documents that number two of their own provisions the same, and how many
+	// provisions that came to. The parser gives the later ones their own
+	// identifier rather than letting one answer for both, and the count is
+	// printed because it is a property of the corpus worth watching: a jump in
+	// it is a structure the walk stopped recognising.
+	repeatDocs, repeatProvisions := 0, 0
 	write := func(in parse.Input) error {
 		doc, err := parse.Parse(in)
 		if err != nil {
@@ -139,6 +145,16 @@ func cmdParse(args []string) error {
 			metadata++
 		default:
 			parsed++
+			repeats := 0
+			for i := range doc.Provisions {
+				if law.Repeated(doc.Provisions[i].ID) {
+					repeats++
+				}
+			}
+			if repeats > 0 {
+				repeatDocs++
+				repeatProvisions += repeats
+			}
 		}
 		// The same instrument is published in more than one dataset and the
 		// publications do not carry the same fields, so what is already on disk
@@ -180,6 +196,10 @@ func cmdParse(args []string) error {
 		parsed, quarantined, metadata, skipped)
 	if merged > 0 {
 		fmt.Printf("parse: %d documents another dataset had already published, merged field by field rather than overwritten\n", merged)
+	}
+	if repeatDocs > 0 {
+		fmt.Printf("parse: %d provisions across %d documents carry a number the document had already used, and each of them has an occurrence index so no identifier answers for two provisions\n",
+			repeatProvisions, repeatDocs)
 	}
 	return nil
 }
